@@ -32,22 +32,49 @@ struct WarmthMapView: View {
     @State private var warmthFilter: Set<Warmth> = Set(Warmth.allCases)
     @State private var showsOnlyOpenFollowUps = false
     @State private var hasCenteredOnUser = false
+    @State private var isLocating = false
+    @State private var isShowingLegend = false
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
                 map
-                filterBar
+                VStack(spacing: 0) {
+                    filterBar
+                    if isShowingLegend { legend }
+                    if !app.reachability.isOnline, app.sharedWarmth.state.isActive {
+                        staleTeamDataNotice
+                    }
+                }
             }
             .navigationTitle("Map")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    ConnectivityPill(
+                        reachability: app.reachability,
+                        queuedCount: app.sharedWarmth.pendingUploadCount
+                    )
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isShowingLegend.toggle()
+                    } label: {
+                        Image(systemName: isShowingLegend ? "questionmark.circle.fill" : "questionmark.circle")
+                    }
+                    .accessibilityLabel(isShowingLegend ? "Hide the colour key" : "Show the colour key")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Task { await centerOnUser() }
                     } label: {
-                        Image(systemName: "location.fill")
+                        if isLocating {
+                            ProgressView()
+                        } else {
+                            Image(systemName: "location.fill")
+                        }
                     }
+                    .disabled(isLocating)
                     .accessibilityLabel("Centre on my location")
                 }
             }
@@ -101,7 +128,7 @@ struct WarmthMapView: View {
         }
         .ignoresSafeArea(edges: .bottom)
         .overlay(alignment: .center) {
-            if pinnedContacts.isEmpty {
+            if pinnedContacts.isEmpty, !isLocating {
                 emptyOverlay
             }
         }
@@ -171,6 +198,62 @@ struct WarmthMapView: View {
             .padding(.horizontal, Space.screenEdge)
             .padding(.vertical, Space.sm)
         }
+        .background(.ultraThinMaterial)
+    }
+
+    /// The colour key. Red through green, with the glyphs that carry the same
+    /// information without colour, because a red-to-green ramp is precisely the
+    /// scale a colour-blind viewer cannot read.
+    private var legend: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Text("Colour key")
+                .font(Type.label)
+                .textCase(.uppercase)
+                .foregroundStyle(Palette.textSecondary)
+            HStack(spacing: Space.sm) {
+                ForEach([Warmth.cool, .neutral, .warm, .champion]) { warmth in
+                    HStack(spacing: 4) {
+                        Image(systemName: warmth.symbolName)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 18, height: 18)
+                            .background(warmth.tint, in: Circle())
+                        Text(warmth.label)
+                            .font(.caption2)
+                            .foregroundStyle(Palette.textPrimary)
+                    }
+                }
+            }
+            HStack(spacing: 4) {
+                Image(systemName: Warmth.doNotReturn.symbolName)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .background(Warmth.doNotReturn.tint, in: Circle())
+                Text("Do not contact — deliberately off the colour scale")
+                    .font(.caption2)
+                    .foregroundStyle(Palette.textSecondary)
+            }
+        }
+        .padding(.horizontal, Space.screenEdge)
+        .padding(.vertical, Space.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// Offline with team sharing on: the pins may be behind what a colleague
+    /// has recorded. Saying so is better than showing stale data silently.
+    private var staleTeamDataNotice: some View {
+        Label(
+            "Offline — teammates' updates will appear when you reconnect.",
+            systemImage: "wifi.slash"
+        )
+        .font(.caption2)
+        .foregroundStyle(Palette.textSecondary)
+        .padding(.horizontal, Space.screenEdge)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.ultraThinMaterial)
     }
 
@@ -276,6 +359,8 @@ struct WarmthMapView: View {
     }
 
     private func centerOnUser() async {
+        isLocating = true
+        defer { isLocating = false }
         guard let fix = await app.location.currentLocation(maximumAge: 120) else {
             // No fix: frame whatever pins exist instead of dropping the user in
             // the middle of the Atlantic.

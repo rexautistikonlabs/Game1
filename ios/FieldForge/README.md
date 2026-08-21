@@ -55,9 +55,12 @@ resolve.
 > **This code has not been compiled.** It was written in a Linux environment
 > with no Swift toolchain or Xcode available, so treat the first build as a
 > normal first build: expect a handful of signature and inference fixes, not a
-> rewrite. Everything is plain SwiftUI/SwiftData/PDFKit/PassKit against
-> documented iOS 17 APIs, and the pieces most likely to need a nudge are called
-> out under [Remaining work](#remaining-work).
+> rewrite. What *has* been verified statically, across all 93 files: brace and
+> delimiter balance, no duplicate top-level declarations, no unresolved
+> type references, and every framework import present for the symbols each file
+> uses. Everything is plain SwiftUI/SwiftData/PDFKit/PassKit/CloudKit against
+> documented iOS 17 APIs, and the pieces most likely to need a nudge are ranked
+> under [Remaining work](#remaining-work).
 
 ### Before the first run
 
@@ -93,9 +96,36 @@ Both are real PDFs built with Core Text — selectable text an accountant can co
 an amount out of, correct physical page size on US Letter *and* A4, proper
 pagination, and a signature block that never orphans across a page break.
 
-Branding is free forever: logo, brand colour, letterhead lines, EIN, tagline,
-signature. The paid tier adds the full-colour letterhead band, a custom footer,
-and per-document signatory overrides.
+**Branding.** Four finished letterhead designs rather than a pile of toggles —
+classic, colour band, split, and minimal (for printing onto stationery that
+already has a letterhead). Four body typefaces, drawn from the font *designs*
+built into iOS rather than licensed font files: shipping a typeface is a legal
+question the app cannot answer for a user, and a missing font at render time
+would be a blank page in front of a donor. Four footer options, from
+legal-minimum to name-EIN-and-mission.
+
+Logo, brand colour, letterhead lines, EIN, tagline and signature are free
+forever; the colour-band and split letterheads, the richer footers and
+per-document signatories are paid. Both free styles still produce a document
+nobody would be embarrassed to hand over — that is the test any free tier here
+has to pass.
+
+**In-kind photographs** can be rendered into the acknowledgment letter, placed
+after the gift summary and before the tax paragraph: the summary says "42
+blankets", the photographs show them, and the substantiation language has the
+last word. The caption is careful, because a photograph next to a number could
+easily read as the charity valuing the property — exactly what `TaxLanguage` is
+at pains not to do. Any value shown is labelled as the donor's own estimate.
+
+**Void and revision.** A void keeps the document, its number and its PDF, and
+requires a reason — "voided, no reason given" is the least useful entry an audit
+trail can hold. Deleting would be wrong twice over: the donor may be holding a
+printed copy, and a gap in the numbering looks like a cover-up. Every document
+carries an append-only `DocumentAuditEntry` trail — issued, sent, queued,
+failed, printed, shared, voided, superseded — and the three delivery
+transitions append to it *inside the same call* that changes the state, because
+there are eight places in the app that mark a document sent and a delivery
+without a trail entry is a delivery nobody can prove.
 
 **The IRS language is the part that has to be right**, so it lives alone in
 `Documents/TaxLanguage.swift` — pure functions, no I/O, no models, and the most
@@ -152,40 +182,84 @@ A four-point rating (plus a deliberately separated "do not contact again"),
 tapped once at the end of every interaction. Twenty documented "not today"s are
 how the twenty-first door opens.
 
+- **Red → amber → olive → green.** A sequential ramp anyone reads instinctively
+  on a map. "Do not contact" sits deliberately *off* the ramp in purple, because
+  it is a hard stop rather than "very cold" — and because that keeps it
+  distinguishable from the red end for the viewers a red-green ramp serves
+  worst. Every indicator also carries a glyph in an unambiguous progression
+  (`minus` → `equals` → `plus` → `star`), so the scale reads identically with
+  the colour removed. The map has a colour key.
 - Contact-level warmth is a **recency-weighted roll-up** of every visit rating,
   with a one-year half-life, so a business that was cold in 2019 and warm last
-  week reads as warm. `doNotReturn` is absorbing and overrides everything.
-- Private notes (this device only) and shared notes (the team) are separate
-  fields, everywhere, on every tier.
-- Preferred contact window — "afternoons", "avoid the rush" — which is one of
-  the highest-value things a team can tell itself.
-- A map coloured by warmth, filterable, with an "owed" filter for open
-  follow-ups. Colour is never the only signal: every pin and badge carries a
-  glyph and a text label.
-- **Today shows warm contacts within a ten-minute walk.** That is the feature
-  that turns a spare twenty minutes into a visit.
+  week reads as warm. `doNotReturn` is absorbing.
+- Preferred contact window — "afternoons", "avoid the rush" — which now also
+  drives *when reminders fire* (see §5).
 
-### 4. Capture, fast
+#### Shared Warmth, and how private notes stay private
 
-- **Photograph the sign.** VisionKit's live text scanner reads the storefront,
-  the heuristic being that the largest text on signage is the business name
-  (because signage is designed to be read from across a street). Hours and phone
-  numbers are explicitly excluded — the case that breaks a naive "largest wins".
-  All-caps signage is title-cased; a deliberately mixed-case brand is left
-  alone.
-- **Business cards**, where a job title anchors the person's name on the line
+The paid tier shares warmth, giving history and team notes across a whole staff
+over a **CloudKit shared record zone**. A zone-level `CKShare` rather than
+per-record shares: a team shares one zone, everyone in it reads and writes, and
+adding a teammate does not mean re-sharing 400 records. Invites go through
+`UICloudSharingController`, so it is the sharing sheet people already know from
+Photos.
+
+Private notes never leave the device, and that is enforced four independent
+ways — three of them at compile time:
+
+1. **`SharedContactProjection` has no field for private notes.** Not an empty
+   one, not an optional one — none. Nothing that reads a `Contact` and writes a
+   projection can carry them, because there is nowhere to put them.
+2. **The CloudKit record is built from the projection, never from a `Contact`.**
+   `apply(to:)` is a method on the projection, so the networking layer cannot
+   see a private field even by accident.
+3. **The two live in physically separate store files**, each with its own
+   `ModelConfiguration`. The bytes that sync and the bytes that must not sync are
+   different files on disk.
+4. **A test asserts it.** `SharedWarmthPrivacyTests` writes a sentinel string
+   into every private field, projects, builds the record, walks *every key
+   actually present*, and fails if the sentinel appears anywhere.
+
+The Team screen shows both halves of the payload — what leaves and what stays —
+generated from the same `Key.all` list the record builder uses, so the
+disclosure cannot drift away from the truth.
+
+Two merge rules worth knowing: last-writer-wins on `updatedAt`, except
+`isDoNotContact`, which is **sticky**. If anybody on the team has been told to
+stop contacting someone, a staler record cannot undo it.
+
+### 4. Capture, fast — and one-handed
+
+The design target is explicit: **any capture reachable in two taps, and the
+common one in one.**
+
+- **Quick Capture.** A tap opens the flow. A long press fans out three
+  shortcuts — scan a sign, scan a card, or return to the last contact — each of
+  which is the second tap. The fan opens upward and *inward*, into the arc a
+  thumb sweeps without the hand changing grip, rather than toward the top of the
+  screen where a thumb on a 6.7" phone cannot reach at all. Left-handed users
+  get the whole control mirrored via a stored preference, and VoiceOver users
+  get the shortcuts as accessibility actions, because a long press is not
+  discoverable with the screen curtain on.
+- **One-action scan.** Scan a sign, tap Use, and the contact *and* the visit are
+  already saved, GPS-stamped, with the photograph attached as evidence — and the
+  flow opens on the gift step in case money changed hands. That is two
+  interactions for what used to be five. The safety property that makes
+  committing this early acceptable: nothing in that path is destructive and
+  everything is editable, so a bad OCR read produces a correctable contact
+  flagged "scanned", not a wrong tax document.
+- An existing record is matched rather than duplicated, and a match says "Back
+  at Delgado Hardware" instead of "Added" — which is a much better thing to
+  read. Duplicate detection is deliberately conservative in one direction: a
+  false *match* silently merges two businesses, which is worse than a false
+  *miss* that leaves a duplicate somebody can merge later.
+- **Business cards** where a job title anchors the person's name on the line
   above it, and a minimalist card falls back to the email domain.
-- **Address book import** through Apple's own picker, so no Contacts permission
-  is requested at all.
-- **Dictation** with `requiresOnDeviceRecognition`. This is the whole feature:
-  it works in a basement, in a rural county, and donor conversations never leave
-  the phone. A live level meter, because a silent meter is how you discover your
-  thumb is over the microphone.
-- **GPS check-in**, one-shot and never blocking — if the fix has not arrived in
+- **Dictation** with `requiresOnDeviceRecognition` — it works in a basement and
+  donor conversations never leave the phone.
+- **GPS check-in**, one-shot and never blocking: if the fix has not arrived in
   six seconds the visit saves without it, because a note without a pin is worth
   far more than a lost note.
-- Everything OCR'd lands in an editable field marked "read from a photo, worth a
-  glance", and the parser prefers a blank field to a wrong one.
 
 ### 5. Offline-first, meant literally
 
@@ -220,18 +294,59 @@ and the Outbox screen stays empty. Both paths are first class. The app ships
 with no implementation on purpose — a field app that requires a backend is a
 field app that stops working.
 
-### 6. Lightweight CRM
+### 6. Lightweight CRM and the follow-up engine
 
 Contacts creatable from a single field. Visit history, giving history, open
-follow-ups, and documents on one screen, ordered for the moment it is actually
-read: standing outside the building, thirty seconds before knocking. One-tap
-call / text / email / directions. Reminders that arrive at a civil hour (a
-midnight due date is scheduled for 9am, a deliberate 4:30pm is left alone) and
-carry an action button, because a reminder you can act on from the list is a
-reminder that gets done.
+follow-ups, documents, and the team's view of the same contact on one screen,
+ordered for the moment it is actually read: standing outside the building,
+thirty seconds before knocking.
+
+- **One-tap Call / Text / Email / Directions / Schedule / Remind.** "Schedule"
+  creates a visit reminder in one tap, with no sheet and no date picker — a week
+  out, snapped to the hour that contact is actually catchable.
+- **Reminders fire at the right time of day.** A bare date on a contact whose
+  window is "after the lunch rush" fires at 2pm, not 9am. A lunch-hour contact
+  fires at 11:45, *before* the window, so there is time to walk there. A time
+  the staffer chose on purpose is never moved. The notification says why it
+  arrived now, which is what makes good timing read as deliberate rather than
+  random.
+- **Route mode** (paid) orders today's follow-ups by walking distance: nearest
+  neighbour plus 2-opt, which gets within a few percent of optimal on a dozen
+  stops in well under a millisecond, entirely offline. Straight-line distance,
+  not street routing — street routing needs a network and this has to work in a
+  basement, and over a few blocks the crow-flies order and the walking order
+  agree. The screen is built around the *current stop*, not the list, because
+  that is how it is used: phone held low, glanced at between buildings. Marking
+  a stop done completes its follow-up, and does **not** reshuffle the remaining
+  order — a staffer mid-street has already decided where they are walking.
+- Warm contacts near the route are folded in, which turns a four-stop errand
+  into a productive afternoon.
 
 A denied notification permission never loses a commitment: the `FollowUp` record
 is the source of truth and Today surfaces it regardless.
+
+### 7. The Today screen
+
+Rebuilt around one question — **what should I do in the next ten seconds?** —
+and ordered by urgency rather than by category:
+
+1. Anything broken: setup missing, storage degraded, documents stuck.
+2. **Who to see today.** One ranked list, not three competing ones. Overdue
+   commitments, then due-today, then warm contacts within a ten-minute walk,
+   then warm contacts not seen in nine months (quietly the most valuable
+   category in fundraising and the easiest to forget). Every row shows *why it
+   is on the list* — an ordering nobody can explain is an ordering nobody
+   trusts — and ties break by distance, which is what saves actual walking.
+3. Route mode, offered only when there are at least two routable stops. A route
+   button that produces a one-stop route is worse than no button.
+4. Today's numbers, small, including the conversion rate a development director
+   will ask about.
+5. What the team has been doing.
+6. Recent activity, so a mistake is easy to find.
+
+The "who to see" empty state has four variants, because the right thing to say
+depends entirely on why the list is empty: no contacts at all, still locating,
+location denied, or genuinely nothing owed.
 
 ---
 
@@ -249,12 +364,26 @@ is the source of truth and Today surfaces it regardless.
 **FieldForge Team** ($12.99/month, $119/year, or **$49/year for organizations
 under $250k** — offered on trust, nobody audits it):
 
-- Shared organizational memory across the whole staff
+- Shared Warmth: one memory across the whole staff, over a CloudKit shared zone
+- Route mode: today's follow-ups in walking order
 - Multiple organizations in one app (fiscal sponsors, consultants)
-- Full-colour letterhead, custom footers, per-document signatories
+- Colour-band and split letterheads, richer footers, per-document signatories
+- Searching document history past 18 months
 - CSV/bulk export
 - Assigning follow-ups to teammates
 - Tap to Pay on iPhone
+
+**On the history limit, specifically.** The free tier's Documents list shows the
+last **18 months** — not three. That is deliberate, and it is the difference
+between a limit and a hostage: 18 months covers the whole of last tax year plus
+the current one, which is the window a donor actually calls about. A nonprofit
+that never pays a penny can still answer every realistic "can you resend my
+receipt from April?".
+
+Nothing is ever deleted. The cap limits what the list *shows*, the Documents
+screen carries a row naming exactly how many older documents exist, and it says
+they are still on the iPhone. A lapsed subscription puts them back behind the
+window they came from; it never makes a donor's tax record unreachable.
 
 The line is deliberate and there is a test asserting it
 (`EntitlementRuleTests`): **nothing a donor's document depends on is ever
@@ -296,8 +425,13 @@ ios/FieldForge/
     ├── Payments/                  Apple Pay, Tap to Pay, manual, gateway seam
     ├── Monetization/              Entitlements, StoreKit 2, paywall
     ├── Services/                  Persistence, reachability, location, OCR,
-    │                              speech, contacts, notifications, outbox, sync
+    │   │                          speech, contacts, notifications, outbox,
+    │   │                          route planning
+    │   └── SharedWarmth/          CloudKit shared-zone sync + sharing sheet
     ├── Features/                  One folder per screen area
+    │   ├── Capture/                 4-step flow, Quick Capture, one-shot scan
+    │   ├── Route/                   Route mode
+    │   └── …
     └── Resources/Assets.xcassets  Semantic colours, both appearances
 ```
 
@@ -355,6 +489,10 @@ Swift Testing, weighted toward the places where being wrong causes real harm:
 | `WarmthTests` | Recency weighting; `doNotReturn` is absolutely sticky |
 | `ContactParserTests` | OCR heuristics, including the hours-bigger-than-the-name case |
 | `DraftAndGiftRuleTests` | Giving totals, draft resume round-trip, outbox backoff |
+| `SharedWarmthPrivacyTests` | **The private-notes guarantee** — sentinel strings, every CloudKit key walked, merge stickiness, store separation |
+| `RoutePlannerTests` | Route ordering on known geometry, distance consistency, progress |
+| `ReminderTimingTests` | Time-of-day scheduling; never fires in the small hours |
+| `AuditAndGatingTests` | Audit trail completeness, void semantics, the free/paid line, letterhead migration |
 
 ---
 
@@ -414,20 +552,17 @@ harmful bug, so the guard is a hard failure rather than a warning.
 
 ### Genuinely unfinished
 
-- **Team sharing is currently "your devices only."** SwiftData mirrors whole
-  models to the user's *private* CloudKit database, which is correct and is how
-  their iPhone and iPad stay in step. Sharing across a *team* needs a shared
-  zone, and sharing these models directly would expose `privateNotes` — which
-  the app promises never leaves the device. The fix is a narrow
-  `SharedContactRecord` model holding only the fields in
-  `SyncEngine.sharedPreview`, written to the shared zone, with no counterpart
-  for private notes so they cannot leak. Until that exists the Team screen says
-  what is actually happening rather than overclaiming. This is the single
-  largest remaining piece.
 - **Bulk CSV export** is gated and described on the paywall but not implemented.
-- **In-kind photo attachment** has full model and thumbnail support; the capture
-  flow tells the staffer to add it from the contact record afterwards rather
-  than offering a camera button inline.
+- **In-kind photo capture** now renders into the letter and has full model and
+  thumbnail support, but the gift step still has no inline camera button — the
+  photos have to be added from the contact record. That is one screen away from
+  done.
+- **`SyncEngine`** is now vestigial. `SharedWarmthService` owns team sharing;
+  `SyncEngine` only reports iCloud account status for the private-database
+  mirror. It should be folded into `Persistence` and deleted.
+- **Assigning follow-ups to teammates** is gated and described but not
+  implemented — the projection would need a `assignedTo` field, which is a
+  deliberate decision to make rather than a field to add casually.
 - **Voice note audio** is transcribed but the `.m4a` is not retained — only the
   text. `AttachmentKind.voiceNote` exists for when it should be.
 - **Notification actions** ("Mark done", "Remind me in a week") are registered
@@ -455,7 +590,15 @@ Ranked by how much I would bet against them:
    actual threading, but strict-concurrency settings could complain.
 4. SwiftData `#Predicate` shapes — particularly the nil-coalescing one in
    `OutboxProcessor.purgeCompletedItems`.
-5. `Map(position:selection:)` with tagged `Annotation` content.
+5. `Map(position:selection:)` with tagged `Annotation` content, and
+   `MapPolyline` in Route mode.
+6. The CloudKit async surface in `SharedWarmthService` —
+   `recordZoneChanges(inZoneWith:since:)`, `modifyRecords(saving:deleting:)` and
+   `CKRecordZone.share`. The shapes are right for iOS 17 but this is the file I
+   would put a breakpoint in first.
+7. `DataScannerViewController.capturePhoto()` inside the `onReady` escape
+   hatch — the closure captures the scanner, which is correct but worth
+   confirming does not retain it past dismissal.
 
 ---
 

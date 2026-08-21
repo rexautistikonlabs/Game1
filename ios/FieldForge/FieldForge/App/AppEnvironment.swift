@@ -28,8 +28,10 @@ final class AppEnvironment {
     let entitlements: Entitlements
     let store: StoreService
     let sync: SyncEngine
+    let sharedWarmth: SharedWarmthService
     let payments: PaymentCoordinator
     let outbox: OutboxProcessor
+    let route: RoutePlanner
 
     /// How the store opened. Surfaced in Settings when it is degraded.
     let persistenceMode: Persistence.Mode
@@ -76,8 +78,13 @@ final class AppEnvironment {
         self.store = StoreService(entitlements: entitlements)
         self.sync = SyncEngine()
 
+        self.sharedWarmth = SharedWarmthService(
+            modelContainer: container,
+            reachability: reachability
+        )
         self.payments = PaymentCoordinator(reachability: reachability)
         self.outbox = OutboxProcessor(container: container, reachability: reachability)
+        self.route = RoutePlanner()
 
         let storedOrgID = UserDefaults.standard.string(forKey: Self.activeOrgKey)
         self.activeOrganizationID = storedOrgID.flatMap(UUID.init(uuidString:))
@@ -104,6 +111,8 @@ final class AppEnvironment {
             isProEnabled: entitlements.isPro,
             isSharingEnabled: entitlements.isTeamSharingEnabled
         )
+        await sharedWarmth.refreshState(isEnabled: entitlements.isSharingActive)
+        await sharedWarmth.sync()
 
         // Drain anything left from last time before the staffer notices it is
         // there. If they are offline this is a no-op and costs nothing.
@@ -148,6 +157,25 @@ final class AppEnvironment {
     var needsOrganizationSetup: Bool {
         guard let organization = activeOrganization() else { return true }
         return !organization.isReadyToIssueDocuments
+    }
+
+    // MARK: Team projection
+
+    /// Call after any change a teammate should see. Cheap, local, and safe to
+    /// call when sharing is off — it simply does nothing.
+    ///
+    /// One funnel on purpose: if projecting were sprinkled across the call
+    /// sites, the first one somebody forgot would silently stop a teammate
+    /// seeing a "do not contact" flag.
+    func projectToTeam(_ contact: Contact) {
+        guard entitlements.isSharingActive, contact.isSharedWithTeam else { return }
+        sharedWarmth.project(contact, staffDisplayName: staffDisplayName)
+    }
+
+    /// Withdraws a contact from the team without touching the local record.
+    func withdrawFromTeam(_ contact: Contact) {
+        guard entitlements.isEnabled(.sharedTeamMemory) else { return }
+        sharedWarmth.withdraw(contactID: contact.id)
     }
 
     // MARK: Reminders

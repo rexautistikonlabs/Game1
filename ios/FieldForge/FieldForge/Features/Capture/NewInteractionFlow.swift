@@ -316,6 +316,8 @@ struct NewInteractionFlow: View {
                 )
             }
 
+            app.projectToTeam(result.contact)
+
             isCommitting = false
             onSuccess(result)
         } catch {

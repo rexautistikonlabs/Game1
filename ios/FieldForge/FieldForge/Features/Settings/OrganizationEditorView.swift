@@ -28,6 +28,7 @@ struct OrganizationEditorView: View {
     @State private var previewKind: DocumentKind = .letter
     @State private var previewData: Data?
     @State private var renderTask: Task<Void, Never>?
+    @State private var isPresentingPaywall = false
 
     var body: some View {
         List {
@@ -35,6 +36,7 @@ struct OrganizationEditorView: View {
             identitySection
             addressSection
             brandingSection
+            footerSection
             signatureSection
             numberingSection
             taxSection
@@ -48,6 +50,7 @@ struct OrganizationEditorView: View {
             guard let item else { return }
             Task { await loadLogo(item) }
         }
+        .sheet(isPresented: $isPresentingPaywall) { PaywallView() }
         .sheet(isPresented: $isPresentingSignature) {
             SignatureCaptureView { png in
                 organization.defaultSignatureData = png
@@ -72,6 +75,10 @@ struct OrganizationEditorView: View {
         .onChange(of: organization.customTaxNote) { _, _ in scheduleRender() }
         .onChange(of: organization.is501c3) { _, _ in scheduleRender() }
         .onChange(of: organization.addressLine1) { _, _ in scheduleRender() }
+        .onChange(of: organization.letterheadStyleRawValue) { _, _ in scheduleRender() }
+        .onChange(of: organization.typefaceRawValue) { _, _ in scheduleRender() }
+        .onChange(of: organization.footerStyleRawValue) { _, _ in scheduleRender() }
+        .onChange(of: organization.missionStatement) { _, _ in scheduleRender() }
     }
 
     // MARK: Preview
@@ -216,26 +223,87 @@ struct OrganizationEditorView: View {
 
             colorPicker
 
-            Toggle("Full-colour letterhead band", isOn: $organization.usesColorBandLetterhead)
-                .tint(Palette.brand)
-                .disabled(!app.entitlements.isEnabled(.advancedBranding))
-
-            if !app.entitlements.isEnabled(.advancedBranding) {
-                LockedFeatureRow(feature: .advancedBranding)
-            }
+            letterheadStylePicker
+            typefacePicker
 
             TextField("Tagline (optional)", text: $organization.letterheadTagline)
                 .textInputAutocapitalization(.sentences)
-
-            if app.entitlements.isEnabled(.advancedBranding) {
-                TextField("Footer line (optional)", text: $organization.letterFooterNote)
-                    .textInputAutocapitalization(.sentences)
-            }
         } header: {
             Text("Branding")
         } footer: {
             Text("A logo and one colour are free, forever. A donor's receipt should never depend on somebody's subscription.")
         }
+    }
+
+    /// Four finished designs, previewed by name and explanation. The paid ones
+    /// are shown rather than hidden — a locked option a nonprofit can see and
+    /// understand is a fair offer; one they cannot find is not.
+    private var letterheadStylePicker: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Text("Letterhead")
+                .font(Type.label)
+                .textCase(.uppercase)
+                .foregroundStyle(Palette.textSecondary)
+
+            ForEach(LetterheadStyle.allCases) { style in
+                let isLocked = style.requiresAdvancedBranding && !hasAdvancedBranding
+                Button {
+                    guard !isLocked else {
+                        isPresentingPaywall = true
+                        return
+                    }
+                    Haptics.selection()
+                    organization.letterheadStyle = style
+                    save()
+                } label: {
+                    HStack(alignment: .top, spacing: Space.sm) {
+                        Image(systemName: organization.letterheadStyle == style
+                              ? "largecircle.fill.circle"
+                              : "circle")
+                            .foregroundStyle(organization.letterheadStyle == style ? Palette.brand : Palette.textTertiary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: Space.xs) {
+                                Text(style.label)
+                                    .font(Type.body)
+                                    .foregroundStyle(Palette.textPrimary)
+                                if isLocked {
+                                    Image(systemName: "lock.fill")
+                                        .font(.caption2)
+                                        .foregroundStyle(Palette.textTertiary)
+                                }
+                            }
+                            Text(style.explanation)
+                                .font(Type.caption)
+                                .foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(minHeight: Space.minimumTarget)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(style.label)
+                .accessibilityHint(isLocked ? "Part of FieldForge Team" : style.explanation)
+                .accessibilityAddTraits(organization.letterheadStyle == style ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+    }
+
+    private var typefacePicker: some View {
+        Picker("Typeface", selection: Binding(
+            get: { organization.typeface },
+            set: { organization.typeface = $0; save(); scheduleRender() }
+        )) {
+            ForEach(DocumentTypeface.allCases) { face in
+                Text(face.label).tag(face)
+            }
+        }
+        .pickerStyle(.segmented)
+        .accessibilityHint(organization.typeface.explanation)
+    }
+
+    private var hasAdvancedBranding: Bool {
+        app.entitlements.isEnabled(.advancedBranding)
     }
 
     /// Preset swatches rather than a full colour picker. Every preset is dark
@@ -274,6 +342,56 @@ struct OrganizationEditorView: View {
                 }
                 .padding(.vertical, 4)
             }
+        }
+    }
+
+    // MARK: Footer
+
+    private var footerSection: some View {
+        Section {
+            Picker("What prints at the bottom", selection: Binding(
+                get: { organization.footerStyle },
+                set: { newValue in
+                    if newValue.requiresAdvancedBranding, !hasAdvancedBranding {
+                        isPresentingPaywall = true
+                        return
+                    }
+                    organization.footerStyle = newValue
+                    save()
+                    scheduleRender()
+                }
+            )) {
+                ForEach(FooterStyle.allCases) { style in
+                    HStack {
+                        Text(style.label)
+                        if style.requiresAdvancedBranding, !hasAdvancedBranding {
+                            Image(systemName: "lock.fill")
+                        }
+                    }
+                    .tag(style)
+                }
+            }
+
+            if organization.footerStyle == .withMission {
+                TextField("Mission line", text: $organization.missionStatement, axis: .vertical)
+                    .lineLimit(1...3)
+                    .textInputAutocapitalization(.sentences)
+            }
+
+            if hasAdvancedBranding {
+                TextField("Extra footer line (optional)", text: $organization.letterFooterNote)
+                    .textInputAutocapitalization(.sentences)
+            }
+
+            Toggle("Include in-kind photos in letters", isOn: Binding(
+                get: { organization.includesInKindPhotosInLetter },
+                set: { organization.includesInKindPhotosInLetter = $0; save(); scheduleRender() }
+            ))
+            .tint(Palette.brand)
+        } header: {
+            Text("Footer and extras")
+        } footer: {
+            Text("Photographs of donated items make an in-kind acknowledgment far more convincing. They are captioned as a record of the property, never as a valuation.")
         }
     }
 

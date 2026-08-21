@@ -60,7 +60,7 @@ struct DeliverStepView: View {
                 ) { activity, completed in
                     isPresentingShare = false
                     guard completed else { return }
-                    document.markSent(channel: friendlyChannelName(activity))
+                    document.markSent(channel: friendlyChannelName(activity), actor: app.staffDisplayName)
                     try? context.save()
                     deliveryKind = .positive
                     deliveryMessage = "Sent."
@@ -161,7 +161,7 @@ struct DeliverStepView: View {
                 SecondaryAction(title: "Print", symbol: "printer") {
                     DocumentPrinter.print(document: document) { completed in
                         guard completed else { return }
-                        document.markSent(channel: "Print")
+                        document.markPrinted(actor: app.staffDisplayName)
                         try? context.save()
                         deliveryKind = .positive
                         deliveryMessage = "Sent to the printer."
@@ -183,16 +183,16 @@ struct DeliverStepView: View {
     private func handleMailResult(_ result: MFMailComposeResult, document: GeneratedDocument) {
         switch result {
         case .sent:
-            document.markSent(channel: "Mail")
+            document.markSent(channel: "Mail", actor: app.staffDisplayName)
             deliveryKind = .positive
             deliveryMessage = "Sent."
             Haptics.success()
         case .saved:
-            document.markQueued()
+            document.markQueued(actor: app.staffDisplayName)
             deliveryKind = .info
             deliveryMessage = "Saved as a draft in Mail."
         case .failed:
-            document.markFailed("Mail could not send it")
+            document.markFailed("Mail could not send it", actor: app.staffDisplayName)
             app.outbox.enqueueEmail(for: document)
             deliveryKind = .caution
             deliveryMessage = "Mail could not send it, so it is queued to try again."
@@ -247,6 +247,9 @@ struct DeliverStepView: View {
         }
         contact.recomputeRollups()
         try? context.save()
+        // The rating is the single most valuable thing a teammate can inherit,
+        // so it goes out the moment it is tapped.
+        app.projectToTeam(contact)
     }
 
     // MARK: Follow-up
@@ -401,6 +404,7 @@ struct DeliverStepView: View {
         contact.contactWindow = draft.contactWindow
         contact.touch()
         try? context.save()
+        app.projectToTeam(contact)
     }
 }
 

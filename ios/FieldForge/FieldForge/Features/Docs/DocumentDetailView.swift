@@ -26,6 +26,10 @@ struct DocumentDetailView: View {
     @State private var isPresentingShare = false
     @State private var shareURL: URL?
     @State private var isConfirmingReissue = false
+    @State private var isPresentingVoid = false
+    @State private var isPresentingReissueReason = false
+    @State private var reissueKind: DocumentKind = .receipt
+    @State private var reissueReason = ""
     @State private var statusMessage: String?
     @State private var statusKind: InlineBanner.Kind = .positive
     @State private var pdf: PDFDocument?
@@ -35,6 +39,13 @@ struct DocumentDetailView: View {
             VStack(alignment: .leading, spacing: Space.lg) {
                 if let statusMessage {
                     InlineBanner(kind: statusKind, message: statusMessage)
+                }
+
+                if document.isVoided {
+                    InlineBanner(
+                        kind: .critical,
+                        message: "Voided\(document.voidReason.trimmedOrNil.map { " — \($0)" } ?? "")."
+                    )
                 }
 
                 if document.deliveryState == .superseded {
@@ -51,6 +62,7 @@ struct DocumentDetailView: View {
                 factsSection
                 sendSection
                 integritySection
+                auditTrailSection
                 reissueSection
             }
             .padding(.horizontal, Space.screenEdge)
@@ -66,7 +78,7 @@ struct DocumentDetailView: View {
             MailComposer(message: DocumentMessageBuilder.mailMessage(for: document)) { result, _ in
                 isPresentingMail = false
                 if result == .sent {
-                    document.markSent(channel: "Mail")
+                    document.markSent(channel: "Mail", actor: app.staffDisplayName)
                     try? context.save()
                     statusKind = .positive
                     statusMessage = "Sent again."
@@ -81,7 +93,7 @@ struct DocumentDetailView: View {
                 ) { _, completed in
                     isPresentingShare = false
                     guard completed else { return }
-                    document.markSent(channel: "Shared")
+                    document.markSent(channel: "Shared", actor: app.staffDisplayName)
                     try? context.save()
                 }
             }
@@ -92,14 +104,41 @@ struct DocumentDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Re-issue as \(document.kind.longLabel.lowercased())") {
-                reissue(as: document.kind)
+                reissueKind = document.kind
+                isPresentingReissueReason = true
             }
             Button("Re-issue as \(document.kind.other.longLabel.lowercased())") {
-                reissue(as: document.kind.other)
+                reissueKind = document.kind.other
+                isPresentingReissueReason = true
             }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("The original stays in your records, marked as re-issued. The new copy gets a revision number so the donor can tell which is current.")
+        }
+        .sheet(isPresented: $isPresentingReissueReason) {
+            ReasonSheet(
+                title: "Why the correction?",
+                explanation: "This goes in the document's history. Somebody reading it in two years should be able to tell what changed.",
+                placeholder: "Wrong amount — the cheque was $250, not $205",
+                confirmTitle: "Issue correction",
+                isDestructive: false
+            ) { reason in
+                reissueReason = reason
+                isPresentingReissueReason = false
+                reissue(as: reissueKind)
+            }
+        }
+        .sheet(isPresented: $isPresentingVoid) {
+            ReasonSheet(
+                title: "Why void this?",
+                explanation: "The document, its number and its history all stay. Only the reason is being added.",
+                placeholder: "Cheque bounced / duplicate / wrong donor",
+                confirmTitle: "Void document",
+                isDestructive: true
+            ) { reason in
+                isPresentingVoid = false
+                voidDocument(reason: reason)
+            }
         }
     }
 
@@ -201,7 +240,7 @@ struct DocumentDetailView: View {
                 Button {
                     DocumentPrinter.print(document: document) { completed in
                         guard completed else { return }
-                        document.markSent(channel: "Print")
+                        document.markPrinted(actor: app.staffDisplayName)
                         try? context.save()
                     }
                 } label: {
@@ -275,8 +314,118 @@ struct DocumentDetailView: View {
                     .font(Type.caption)
                     .foregroundStyle(Palette.textTertiary)
             }
+
+            if !document.isVoided {
+                Divider()
+
+                Button(role: .destructive) {
+                    isPresentingVoid = true
+                } label: {
+                    Label("Void this document", systemImage: "xmark.octagon")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: Space.minimumTarget)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Palette.critical)
+
+                Text("Voiding keeps the document, its number and its history. Nothing is deleted — a receipt the donor is holding has to stay in the record.")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textTertiary)
+            }
         }
         .cardSurface()
+    }
+
+    // MARK: Audit trail
+
+    /// The full history, oldest first. This is the screen somebody opens when a
+    /// donor says "I never got that" or an auditor asks why a number is
+    /// missing, so it shows everything and hides nothing behind a disclosure.
+    private var auditTrailSection: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            SectionHeader(
+                title: "History",
+                subtitle: "Everything that has happened to this document"
+            )
+
+            let trail = document.orderedAuditTrail
+            if trail.isEmpty {
+                Text("Issued, with nothing recorded since.")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textSecondary)
+                    .cardSurface(padding: Space.sm)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(trail.enumerated()), id: \.element.id) { index, entry in
+                        HStack(alignment: .top, spacing: Space.sm) {
+                            // A spine down the left, so the order is legible at
+                            // a glance rather than needing the timestamps read.
+                            VStack(spacing: 0) {
+                                Circle()
+                                    .fill(entry.action.isMaterial ? Palette.brand : Palette.separator)
+                                    .frame(width: 8, height: 8)
+                                if index < trail.count - 1 {
+                                    Rectangle()
+                                        .fill(Palette.separator)
+                                        .frame(width: 1)
+                                        .frame(maxHeight: .infinity)
+                                }
+                            }
+                            .frame(width: 8)
+                            .padding(.top, 5)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                HStack(spacing: Space.xs) {
+                                    Image(systemName: entry.action.symbolName)
+                                        .font(.caption2)
+                                        .foregroundStyle(entry.action == .voided ? Palette.critical : Palette.textSecondary)
+                                    Text(entry.action.label)
+                                        .font(Type.secondary.weight(entry.action.isMaterial ? .semibold : .regular))
+                                        .foregroundStyle(Palette.textPrimary)
+                                }
+                                if let detail = entry.detail.trimmedOrNil {
+                                    Text(detail)
+                                        .font(Type.caption)
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                HStack(spacing: Space.xs) {
+                                    Text(entry.occurredAt.formatted(date: .abbreviated, time: .shortened))
+                                    if let actor = entry.actorDisplayName.trimmedOrNil {
+                                        Text("·")
+                                        Text(actor)
+                                    }
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(Palette.textTertiary)
+                            }
+                            .padding(.bottom, index < trail.count - 1 ? Space.sm : 0)
+
+                            Spacer(minLength: 0)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                .cardSurface(padding: Space.sm)
+            }
+        }
+    }
+
+    private func voidDocument(reason: String) {
+        do {
+            try DocumentEngine.void(
+                document,
+                reason: reason,
+                voidedBy: app.staffDisplayName,
+                context: context
+            )
+            statusKind = .caution
+            statusMessage = "Voided. The record and its history are kept."
+            Haptics.warning()
+        } catch {
+            statusKind = .critical
+            statusMessage = error.localizedDescription
+        }
     }
 
     private func reissue(as kind: DocumentKind) {
@@ -284,6 +433,8 @@ struct DocumentDetailView: View {
             let reissued = try DocumentEngine.reissue(
                 document,
                 as: kind,
+                reason: reissueReason,
+                reissuedBy: app.staffDisplayName,
                 includeDeviceTagInNumber: app.entitlements.needsDeviceTaggedDocumentNumbers,
                 context: context
             )

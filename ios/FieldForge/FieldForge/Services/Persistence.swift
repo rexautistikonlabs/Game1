@@ -15,16 +15,47 @@ import SwiftData
 
 enum Persistence {
 
-    /// Every model in the store. Adding one here is the only registration step.
+    // MARK: - Two stores, on purpose
+    //
+    // The app keeps private data and shareable data in physically separate
+    // store files, each with its own `ModelConfiguration`. That is the
+    // structural half of the promise that `privateNotes` never leaves the
+    // device: the bytes that sync and the bytes that must not sync are
+    // different files on disk, and the syncing code only ever opens one of
+    // them. See `SharedContactProjection` for the other three mechanisms.
+
+    /// Everything private to this staffer. Never targeted by the sharing code.
+    static let privateSchema = Schema([
+        Organization.self,
+        Contact.self,
+        Visit.self,
+        Gift.self,
+        GeneratedDocument.self,
+        DocumentAuditEntry.self,
+        FollowUp.self,
+        Attachment.self,
+        OutboxItem.self,
+    ])
+
+    /// The narrow projection the team sees. One model, by design.
+    static let sharedSchema = Schema([
+        SharedContactProjection.self,
+    ])
+
+    /// Both, for building the container. A single `ModelContext` can read
+    /// across configurations, which is what lets the contact detail screen show
+    /// a teammate's view beside the local record without a second context.
     static let schema = Schema([
         Organization.self,
         Contact.self,
         Visit.self,
         Gift.self,
         GeneratedDocument.self,
+        DocumentAuditEntry.self,
         FollowUp.self,
         Attachment.self,
         OutboxItem.self,
+        SharedContactProjection.self,
     ])
 
     /// How the container was actually opened, so the UI can be honest about it.
@@ -57,6 +88,25 @@ enum Persistence {
         URL.applicationSupportDirectory.appending(path: "FieldForge.store")
     }
 
+    /// The projection store. A separate file so that "what syncs" and "what
+    /// never syncs" are not merely different rows in one database.
+    private static var sharedStoreURL: URL {
+        URL.applicationSupportDirectory.appending(path: "FieldForge-Shared.store")
+    }
+
+    /// The projection configuration. `cloudKitDatabase: .none` deliberately:
+    /// this store is moved by `SharedWarmthService` over a CloudKit *shared*
+    /// zone, which SwiftData mirroring cannot target. Letting SwiftData also
+    /// mirror it would duplicate every record into the private database.
+    static var sharedWarmthConfiguration: ModelConfiguration {
+        ModelConfiguration(
+            "SharedWarmth",
+            schema: sharedSchema,
+            url: sharedStoreURL,
+            cloudKitDatabase: .none
+        )
+    }
+
     /// Opens the store, falling back rather than trapping.
     ///
     /// - Parameter cloudKitEnabled: pass the live Pro entitlement. CloudKit is
@@ -64,15 +114,21 @@ enum Persistence {
     ///   user gets a purely local store and never sees an iCloud prompt.
     @MainActor
     static func open(cloudKitEnabled: Bool) -> Opened {
-        // 1. The intended configuration.
+        // 1. The intended configuration: the private store, optionally mirrored
+        //    to the user's own private CloudKit database, plus the projection
+        //    store which is never mirrored by SwiftData.
         let primary = ModelConfiguration(
-            schema: schema,
+            "Private",
+            schema: privateSchema,
             url: storeURL,
             cloudKitDatabase: cloudKitEnabled
                 ? .private("iCloud.org.example.fieldforge")
                 : .none
         )
-        if let container = try? ModelContainer(for: schema, configurations: primary) {
+        if let container = try? ModelContainer(
+            for: schema,
+            configurations: primary, sharedWarmthConfiguration
+        ) {
             AppLog.persistence.info("Store opened (cloudKit: \(cloudKitEnabled, privacy: .public))")
             return Opened(container: container, mode: cloudKitEnabled ? .synced : .localOnly)
         }
@@ -81,8 +137,11 @@ enum Persistence {
         //    production, or an account in a strange state. Retry locally before
         //    concluding the data is the problem.
         if cloudKitEnabled {
-            let localOnly = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
-            if let container = try? ModelContainer(for: schema, configurations: localOnly) {
+            let localOnly = ModelConfiguration("Private", schema: privateSchema, url: storeURL, cloudKitDatabase: .none)
+            if let container = try? ModelContainer(
+                for: schema,
+                configurations: localOnly, sharedWarmthConfiguration
+            ) {
                 AppLog.persistence.warning("CloudKit unavailable; opened store local-only")
                 return Opened(container: container, mode: .localOnly)
             }
@@ -92,8 +151,11 @@ enum Persistence {
         //    it — and start clean so the app works right now. The old file is
         //    surfaced in Settings so it can be sent in for recovery.
         let recovered = moveStoreAside()
-        let fresh = ModelConfiguration(schema: schema, url: storeURL, cloudKitDatabase: .none)
-        if let container = try? ModelContainer(for: schema, configurations: fresh) {
+        let fresh = ModelConfiguration("Private", schema: privateSchema, url: storeURL, cloudKitDatabase: .none)
+        if let container = try? ModelContainer(
+            for: schema,
+            configurations: fresh, sharedWarmthConfiguration
+        ) {
             AppLog.persistence.error("Store unopenable; started fresh, previous file preserved")
             return Opened(container: container, mode: .recoveredAfterFailure(recoveredStoreURL: recovered))
         }
@@ -129,6 +191,23 @@ enum Persistence {
                         at: sidecar,
                         to: URL(fileURLWithPath: destination.path + suffix)
                     )
+                }
+            }
+            // The projection store goes with it. A fresh private store beside a
+            // stale projection store would show team records for contacts that
+            // no longer exist locally, which reads as data corruption.
+            if manager.fileExists(atPath: sharedStoreURL.path) {
+                let sharedDestination = URL.applicationSupportDirectory
+                    .appending(path: "FieldForge-Shared-unopenable-\(stamp).store")
+                try? manager.moveItem(at: sharedStoreURL, to: sharedDestination)
+                for suffix in ["-wal", "-shm"] {
+                    let sidecar = URL(fileURLWithPath: sharedStoreURL.path + suffix)
+                    if manager.fileExists(atPath: sidecar.path) {
+                        try? manager.moveItem(
+                            at: sidecar,
+                            to: URL(fileURLWithPath: sharedDestination.path + suffix)
+                        )
+                    }
                 }
             }
             return destination

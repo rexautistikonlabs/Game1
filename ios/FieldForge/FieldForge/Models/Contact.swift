@@ -136,6 +136,15 @@ final class Contact {
     var updatedAt: Date = Date.now
     var isArchived: Bool = false
 
+    /// Lower-cased, stable sort key mirroring `displayName`.
+    ///
+    /// `displayName` is computed — it falls back from the business name to the
+    /// person's name — so SwiftData cannot sort or index on it. Maintaining a
+    /// stored mirror lets an A–Z list be sorted by the query instead of by
+    /// loading every contact into memory first, which is the difference between
+    /// a snappy list and a stutter at two thousand contacts.
+    var nameSortKey: String = ""
+
     // MARK: Relationships
 
     /// Owning organization. No `inverse:` here — `Organization.contacts`
@@ -158,6 +167,7 @@ final class Contact {
         self.name = name
         self.kindRawValue = kind.rawValue
         self.sourceRawValue = source.rawValue
+        self.nameSortKey = name.lowercased()
     }
 
     // MARK: Derived
@@ -238,7 +248,13 @@ final class Contact {
         streetLine.trimmedOrNil != nil && cityStateZipLine.trimmedOrNil != nil
     }
 
-    func touch() { updatedAt = .now }
+    func touch() {
+        updatedAt = .now
+        // Recomputed here rather than in a dozen setters: `touch()` is already
+        // the single funnel every mutation goes through.
+        let key = displayName.lowercased()
+        if nameSortKey != key { nameSortKey = key }
+    }
 
     /// Adds a tag, case-insensitively de-duplicated and trimmed, so "Restaurant"
     /// and "restaurant " do not become two facets of the same idea.

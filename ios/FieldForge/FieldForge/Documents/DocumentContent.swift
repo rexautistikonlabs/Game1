@@ -34,7 +34,13 @@ struct DocumentContent {
     var footerNote: String
     var logo: UIImage?
     var brandColor: UIColor
-    var usesColorBandLetterhead: Bool
+    var letterheadStyle: LetterheadStyle
+    var typeface: DocumentTypeface
+    var footerStyle: FooterStyle
+    var missionStatement: String
+    /// Photographs of the donated items, with captions. Empty unless the gift
+    /// is in-kind and the organization opted in.
+    var inKindPhotos: [(image: UIImage, caption: String)] = []
 
     // MARK: Recipient
 
@@ -208,7 +214,24 @@ extension DocumentContent {
         self.footerNote = organization.letterFooterNote
         self.logo = organization.logoData.flatMap(UIImage.init(data:))
         self.brandColor = UIColor(organization.brandColor)
-        self.usesColorBandLetterhead = organization.usesColorBandLetterhead
+        self.letterheadStyle = organization.letterheadStyle
+        self.typeface = organization.typeface
+        self.footerStyle = organization.footerStyle
+        self.missionStatement = organization.missionStatement
+
+        // In-kind photographs, newest first, capped at six. Six fills three
+        // rows of two, which is as much as belongs on an acknowledgment before
+        // it stops reading as a letter.
+        if gift.isInKind, organization.includesInKindPhotosInLetter {
+            self.inKindPhotos = (gift.attachments ?? [])
+                .filter { $0.kind == .inKindItem || $0.kind == .photo }
+                .sorted { $0.capturedAt < $1.capturedAt }
+                .prefix(6)
+                .compactMap { attachment in
+                    guard let image = attachment.image else { return nil }
+                    return (image, attachment.captionForDocument)
+                }
+        }
 
         self.recipientName = contact?.displayName ?? "Friend"
         self.recipientAddressLines = contact?.mailingAddressLines ?? []
@@ -259,7 +282,14 @@ extension DocumentContent {
         self.footerNote = ""
         self.logo = document.organization?.logoData.flatMap(UIImage.init(data:))
         self.brandColor = UIColor(document.organization?.brandColor ?? .accentColor)
-        self.usesColorBandLetterhead = document.organization?.usesColorBandLetterhead ?? false
+        self.letterheadStyle = document.organization?.letterheadStyle ?? .classic
+        self.typeface = document.organization?.typeface ?? .serif
+        self.footerStyle = document.organization?.footerStyle ?? .legalMinimum
+        self.missionStatement = document.organization?.missionStatement ?? ""
+        // A re-print is text-only. Photographs are not part of the frozen
+        // snapshot, so reproducing them could show a different set than the
+        // donor originally received.
+        self.inKindPhotos = []
 
         self.recipientName = document.recipientName
         self.recipientAddressLines = document.recipientAddressBlock

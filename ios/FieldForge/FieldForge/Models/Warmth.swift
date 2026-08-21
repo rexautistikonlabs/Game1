@@ -49,19 +49,32 @@ enum Warmth: Int, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
+    /// The glyph carries the ordering on its own: minus, equals, plus, star is
+    /// an unambiguous progression with the colour removed entirely.
+    ///
+    /// That is not a nicety. The scale is a red-to-green ramp, which is the
+    /// single worst pairing for the ~8% of men with deuteranopia, so the shape
+    /// has to do the work the colour cannot.
     var symbolName: String {
         switch self {
         case .unrated: return "circle.dashed"
         case .doNotReturn: return "hand.raised.fill"
-        case .cool: return "snowflake"
+        case .cool: return "minus.circle.fill"
         case .neutral: return "equal.circle.fill"
-        case .warm: return "sun.max.fill"
+        case .warm: return "plus.circle.fill"
         case .champion: return "star.fill"
         }
     }
 
-    /// Map pin and badge colour. Sequential cool-to-warm, and legible in both
-    /// appearances — these are Asset Catalog colours, not raw system reds.
+    /// Map pin and badge colour: a sequential red → amber → olive → green ramp,
+    /// which is what anyone reads instinctively on a map. `doNotReturn` sits
+    /// deliberately off the ramp in purple, because it is a hard stop rather
+    /// than "very cold" — and because that keeps it distinguishable from the
+    /// red end for exactly the viewers the ramp serves worst.
+    ///
+    /// Asset Catalog colours, not raw system reds: each has a hand-picked value
+    /// per appearance, dark enough in light mode to carry a white glyph on a
+    /// filled pin and to read as text on its own pale tint.
     var tint: Color {
         switch self {
         case .unrated: return Color("WarmthUnrated")

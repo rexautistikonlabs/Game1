@@ -91,7 +91,10 @@ enum NotificationScheduler {
             return false
         }
 
-        let fireDate = normalizedFireDate(for: followUp.dueAt)
+        let fireDate = normalizedFireDate(
+            for: followUp.dueAt,
+            window: followUp.contact?.contactWindow ?? .unknown
+        )
         guard fireDate > .now else {
             // Already due. The Today screen shows it; a notification in the past
             // cannot be scheduled and a fake one now would be startling.
@@ -140,18 +143,46 @@ enum NotificationScheduler {
         followUp.isNotificationScheduled = false
     }
 
-    /// Moves a midnight date to a working hour, and leaves a deliberate time
-    /// alone. A staffer who set 4:30pm meant 4:30pm.
-    static func normalizedFireDate(for date: Date, calendar: Calendar = .current) -> Date {
+    /// Moves a midnight date to the hour the staffer is most likely to actually
+    /// catch this contact, and leaves a deliberate time alone.
+    ///
+    /// Three rules, in order:
+    ///
+    /// 1. A time the staffer chose on purpose is never touched. Someone who set
+    ///    4:30pm meant 4:30pm.
+    /// 2. A bare date on a contact with a known good window fires at the start
+    ///    of that window. Reminding someone to call a restaurant is much more
+    ///    useful at 2pm than at 9am, and the app already knows the owner said
+    ///    "after the lunch rush".
+    /// 3. Otherwise 9am: early enough to plan the day around, late enough to be
+    ///    civil.
+    static func normalizedFireDate(
+        for date: Date,
+        window: ContactWindow = .unknown,
+        calendar: Calendar = .current
+    ) -> Date {
         let components = calendar.dateComponents([.hour, .minute], from: date)
         let isMidnight = (components.hour ?? 0) == 0 && (components.minute ?? 0) == 0
         guard isMidnight else { return date }
-        return calendar.date(
-            bySettingHour: defaultHour,
-            minute: defaultMinute,
-            second: 0,
-            of: date
-        ) ?? date
+
+        let (hour, minute) = preferredHour(for: window)
+        return calendar.date(bySettingHour: hour, minute: minute, second: 0, of: date) ?? date
+    }
+
+    /// When to fire for a given window. Times are chosen to land *before* the
+    /// window opens where that helps — a reminder at 11:45 about a lunch-hour
+    /// contact gives the staffer time to walk there.
+    static func preferredHour(for window: ContactWindow) -> (hour: Int, minute: Int) {
+        switch window {
+        case .earlyMorning: return (7, 30)
+        case .midMorning: return (10, 0)
+        case .lunch: return (11, 45)
+        case .afternoon: return (14, 0)
+        case .evening: return (17, 30)
+        case .byAppointment: return (9, 0)     // time to phone and book
+        case .neverDuringRush: return (14, 30) // between the two rushes
+        case .unknown: return (defaultHour, defaultMinute)
+        }
     }
 
     // MARK: Copy
@@ -171,11 +202,19 @@ enum NotificationScheduler {
     }
 
     private static func body(for followUp: FollowUp) -> String {
-        if let note = followUp.note.trimmedOrNil { return note }
-        if let window = followUp.contact?.contactWindow, window != .unknown {
-            return "Best time to catch them: \(window.label.lowercased())."
+        var parts: [String] = []
+        if let note = followUp.note.trimmedOrNil {
+            parts.append(note)
         }
-        return "Tap to open their record."
+        // Explaining the timing is what makes a well-timed reminder read as
+        // deliberate rather than random.
+        if let window = followUp.contact?.contactWindow, window != .unknown {
+            parts.append("They are best caught \(window.label.lowercased()).")
+        }
+        if parts.isEmpty {
+            parts.append("Tap to open their record.")
+        }
+        return parts.joined(separator: " ")
     }
 
     // MARK: Housekeeping

@@ -23,6 +23,7 @@ struct ContactDetailView: View {
 
     @State private var isPresentingEditor = false
     @State private var isPresentingFollowUp = false
+    @State private var scheduledConfirmation: String?
 
     var body: some View {
         ScrollView {
@@ -30,7 +31,11 @@ struct ContactDetailView: View {
                 header
                 if contact.isDoNotContact { doNotContactBanner }
                 quickActions
+                if let scheduledConfirmation {
+                    InlineBanner(kind: .positive, message: scheduledConfirmation)
+                }
                 warmthCard
+                teamCard
                 if !openFollowUps.isEmpty { followUpsSection }
                 givingSection
                 visitsSection
@@ -98,6 +103,7 @@ struct ContactDetailView: View {
             contact.doNotContactReason = ""
             contact.recomputeRollups()
             try? context.save()
+            app.projectToTeam(contact)
         }
     }
 
@@ -121,10 +127,45 @@ struct ContactDetailView: View {
             if let url = ContactActions.mapsURL(for: contact) {
                 QuickActionButton(symbol: "map.fill", label: "Directions") { openURL(url) }
             }
+            if !contact.isDoNotContact {
+                QuickActionButton(symbol: "calendar.badge.plus", label: "Schedule") {
+                    scheduleVisit()
+                }
+            }
             QuickActionButton(symbol: "bell.badge.fill", label: "Remind") {
                 isPresentingFollowUp = true
             }
         }
+    }
+
+    /// One tap creates a visit reminder at the contact's own best time of day,
+    /// which is the whole point of recording a contact window in the first
+    /// place. No sheet, no date picker — the staffer can adjust it afterwards
+    /// if they care, and most of the time they will not need to.
+    private func scheduleVisit() {
+        let calendar = Calendar.current
+        // A week out by default, then snapped to the hour they are catchable.
+        let base = calendar.date(byAdding: .day, value: 7, to: .now) ?? .now
+        let startOfDay = calendar.startOfDay(for: base)
+        let due = NotificationScheduler.normalizedFireDate(
+            for: startOfDay,
+            window: contact.contactWindow
+        )
+
+        let followUp = FollowUp(
+            kind: .visitAgain,
+            dueAt: due,
+            note: contact.sharedNotes.trimmedOrNil ?? ""
+        )
+        followUp.contact = contact
+        followUp.isSharedWithTeam = app.entitlements.isSharingActive
+        followUp.assignedToDisplayName = app.staffDisplayName
+        context.insert(followUp)
+        try? context.save()
+
+        Task { await NotificationScheduler.schedule(followUp) }
+        Haptics.success()
+        scheduledConfirmation = "Visit reminder set for \(due.formatted(date: .abbreviated, time: .shortened))."
     }
 
     private var emailSubject: String {
@@ -161,6 +202,67 @@ struct ContactDetailView: View {
                 }
             }
             .cardSurface(padding: Space.sm)
+        }
+    }
+
+    // MARK: What the team knows
+
+    /// A teammate's view of this contact, when one has arrived. This is the
+    /// payoff of Shared Warmth on the screen where it matters most — the one
+    /// open thirty seconds before knocking.
+    @ViewBuilder
+    private var teamCard: some View {
+        if let projection = app.sharedWarmth.remoteProjection(for: contact.id) {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                SectionHeader(
+                    title: "Your team's read",
+                    subtitle: projection.lastUpdatedByDisplayName.trimmedOrNil
+                        .map { "Last updated by \($0)" }
+                )
+
+                VStack(spacing: Space.xs) {
+                    LabeledRow(
+                        label: "Their warmth",
+                        value: projection.warmth.label,
+                        systemImage: projection.warmth.symbolName
+                    )
+                    if projection.contactWindow != .unknown {
+                        LabeledRow(
+                            label: "Best time",
+                            value: projection.contactWindow.label,
+                            systemImage: "clock"
+                        )
+                    }
+                    if projection.giftCount > 0 {
+                        LabeledRow(
+                            label: "Team-wide giving",
+                            value: "\(projection.lifetimeGiving.formatted) over \(projection.giftCount)",
+                            systemImage: "gift",
+                            isMonospaced: true
+                        )
+                    }
+                    if let notes = projection.sharedNotes.trimmedOrNil {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Their notes")
+                                .font(Type.label)
+                                .textCase(.uppercase)
+                                .foregroundStyle(Palette.textSecondary)
+                            Text(notes)
+                                .font(Type.secondary)
+                                .foregroundStyle(Palette.textPrimary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .cardSurface(padding: Space.sm)
+
+                if projection.warmth != contact.warmth, projection.warmth != .unrated {
+                    InlineBanner(
+                        kind: .info,
+                        message: "A teammate rated them \(projection.warmth.label.lowercased()) — your own reading is \(contact.warmth.label.lowercased())."
+                    )
+                }
+            }
         }
     }
 
@@ -284,7 +386,12 @@ struct ContactDetailView: View {
                         "What should whoever visits next know?",
                         text: Binding(
                             get: { contact.sharedNotes },
-                            set: { contact.sharedNotes = $0; contact.touch(); try? context.save() }
+                            set: {
+                                contact.sharedNotes = $0
+                                contact.touch()
+                                try? context.save()
+                                app.projectToTeam(contact)
+                            }
                         ),
                         axis: .vertical
                     )
@@ -301,6 +408,12 @@ struct ContactDetailView: View {
                         Text("Only on this iPhone")
                             .font(Type.label)
                             .textCase(.uppercase)
+                        Spacer()
+                        if app.entitlements.isSharingActive {
+                            Text("Not shared, even with your team")
+                                .font(.caption2)
+                                .textCase(nil)
+                        }
                     }
                     .foregroundStyle(Palette.textSecondary)
 
@@ -333,6 +446,11 @@ struct ContactDetailView: View {
                         set: { newValue in
                             SyncEngine.markShared(contact, isShared: newValue)
                             try? context.save()
+                            if newValue {
+                                app.projectToTeam(contact)
+                            } else {
+                                app.withdrawFromTeam(contact)
+                            }
                         }
                     )) {
                         VStack(alignment: .leading, spacing: 1) {

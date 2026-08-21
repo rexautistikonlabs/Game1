@@ -24,6 +24,7 @@ struct DocumentsListView: View {
     @State private var kindFilter: DocumentKind?
     @State private var stateFilter: DeliveryState?
     @State private var isPresentingOutbox = false
+    @State private var isPresentingPaywall = false
 
     var body: some View {
         NavigationStack {
@@ -66,6 +67,7 @@ struct DocumentsListView: View {
                 }
             }
             .sheet(isPresented: $isPresentingOutbox) { OutboxView() }
+            .sheet(isPresented: $isPresentingPaywall) { PaywallView() }
             .onDisappear {
                 // Staged share files hold donor PDFs in a temporary directory.
                 // Clear them when leaving rather than on a timer.
@@ -119,6 +121,34 @@ struct DocumentsListView: View {
             } header: {
                 Text(summaryHeader)
             }
+
+            if hiddenByWindowCount > 0 {
+                Section {
+                    Button {
+                        isPresentingPaywall = true
+                    } label: {
+                        HStack(spacing: Space.md) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundStyle(Palette.brand)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("\(hiddenByWindowCount) older document\(hiddenByWindowCount == 1 ? "" : "s")")
+                                    .font(Type.body.weight(.medium))
+                                Text("Still saved on this iPhone. Team unlocks searching past 18 months.")
+                                    .font(Type.caption)
+                                    .foregroundStyle(Palette.textSecondary)
+                            }
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Palette.textTertiary)
+                        }
+                        .frame(minHeight: Space.minimumTarget)
+                    }
+                    .buttonStyle(.plain)
+                } footer: {
+                    Text("Nothing has been deleted. The free tier shows the last 18 months, which covers last tax year and this one.")
+                }
+            }
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -146,13 +176,25 @@ struct DocumentsListView: View {
         if let stateFilter {
             result = result.filter { $0.deliveryState == stateFilter }
         } else {
-            // Superseded copies are audit trail, not everyday reading.
+            // Superseded copies are audit trail, not everyday reading. Voided
+            // ones stay visible: a voided receipt somebody is holding is very
+            // much something you want to find.
             result = result.filter { $0.deliveryState != .superseded }
         }
         if let query = searchText.trimmedOrNil?.lowercased() {
             result = result.filter { $0.searchIndex.contains(query) }
         }
+        if let cutoff = app.entitlements.historyCutoff {
+            result = result.filter { $0.issuedAt >= cutoff }
+        }
         return result
+    }
+
+    /// How many documents the free window is hiding. Named rather than silently
+    /// dropped: a list that quietly ends is indistinguishable from data loss.
+    private var hiddenByWindowCount: Int {
+        guard let cutoff = app.entitlements.historyCutoff else { return 0 }
+        return documents.filter { $0.issuedAt < cutoff && $0.deliveryState != .superseded }.count
     }
 }
 

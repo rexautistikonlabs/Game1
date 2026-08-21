@@ -25,6 +25,7 @@ struct DocumentEngine {
         case organizationNotReady([String])
         case giftNotReady([String])
         case renderProducedNothing
+        case voidNeedsReason
 
         var errorDescription: String? {
             switch self {
@@ -34,6 +35,8 @@ struct DocumentEngine {
                 return blockers.joined(separator: " ")
             case .renderProducedNothing:
                 return "The document could not be rendered. Please try again."
+            case .voidNeedsReason:
+                return "Say why this is being voided — the reason is the useful half of the record."
             }
         }
     }
@@ -155,6 +158,11 @@ struct DocumentEngine {
         document.deliveryState = .saved
 
         context.insert(document)
+        document.recordAudit(
+            .issued,
+            detail: "\(kind.longLabel.capitalizedFirst) for \(document.recipientName)",
+            actor: issuedBy
+        )
         try context.save()
 
         AppLog.documents.info("Issued \(kind.rawValue, privacy: .public) \(number, privacy: .public), \(pdfData.count) bytes")
@@ -170,6 +178,8 @@ struct DocumentEngine {
         as kind: DocumentKind? = nil,
         signature: UIImage? = nil,
         personalNote: String = "",
+        reason: String = "",
+        reissuedBy: String = "",
         includeDeviceTagInNumber: Bool,
         context: ModelContext
     ) throws -> GeneratedDocument {
@@ -212,9 +222,46 @@ struct DocumentEngine {
         original.deliveryState = .superseded
 
         context.insert(document)
+        document.recordAudit(
+            .issued,
+            detail: "Correction of \(original.documentNumber)",
+            actor: reissuedBy
+        )
+        original.recordAudit(
+            .supersededByReissue,
+            detail: "Replaced by \(number)\(reason.trimmedOrNil.map { " — \($0)" } ?? "")",
+            actor: reissuedBy
+        )
         try context.save()
         AppLog.documents.info("Re-issued as \(number, privacy: .public)")
         return document
+    }
+
+    /// Voids a document. The PDF, the number and the trail are all kept.
+    ///
+    /// Deleting would be wrong twice over: the donor may be holding a printed
+    /// copy, and the gap in the numbering would look like a cover-up. So a void
+    /// is an additional fact about the document, never a removal of it.
+    ///
+    /// A reason is required rather than optional. "Voided, no reason given" is
+    /// the least useful entry an audit trail can contain.
+    static func void(
+        _ document: GeneratedDocument,
+        reason: String,
+        voidedBy: String = "",
+        context: ModelContext
+    ) throws {
+        guard let cleanedReason = reason.trimmedOrNil else {
+            throw EngineError.voidNeedsReason
+        }
+        guard !document.isVoided else { return }
+
+        document.voidedAt = .now
+        document.voidReason = cleanedReason
+        document.deliveryState = .voided
+        document.recordAudit(.voided, detail: cleanedReason, actor: voidedBy)
+        try context.save()
+        AppLog.documents.info("Voided \(document.documentNumber, privacy: .public)")
     }
 
     /// Re-renders a stored document from its frozen snapshot, byte-for-byte

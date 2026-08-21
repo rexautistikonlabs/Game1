@@ -39,10 +39,7 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .sheet(isPresented: $isPresentingPaywall) { PaywallView() }
             .task {
-                await app.sync.refreshStatus(
-                    isProEnabled: app.entitlements.isPro,
-                    isSharingEnabled: app.entitlements.isTeamSharingEnabled
-                )
+                await app.sharedWarmth.refreshState(isEnabled: app.entitlements.isSharingActive)
             }
         }
     }
@@ -153,47 +150,34 @@ struct SettingsView: View {
 
     private var teamSection: some View {
         Section {
-            if app.entitlements.isEnabled(.sharedTeamMemory) {
-                Toggle(isOn: Binding(
-                    get: { app.entitlements.isTeamSharingEnabled },
-                    set: { newValue in
-                        app.entitlements.isTeamSharingEnabled = newValue
-                        Task {
-                            await app.sync.refreshStatus(
-                                isProEnabled: app.entitlements.isPro,
-                                isSharingEnabled: newValue
-                            )
-                        }
-                    }
-                )) {
+            NavigationLink {
+                TeamView()
+            } label: {
+                HStack(spacing: Space.md) {
+                    Image(systemName: "person.2.fill")
+                        .foregroundStyle(app.sharedWarmth.state.isActive ? Palette.positive : Palette.textSecondary)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Shared organizational memory")
-                        Text(app.sync.status.description)
+                        Text("Shared warmth")
+                            .font(Type.body)
+                        Text(app.entitlements.isEnabled(.sharedTeamMemory)
+                             ? app.sharedWarmth.state.description
+                             : "Part of FieldForge Team")
                             .font(Type.caption)
                             .foregroundStyle(Palette.textSecondary)
                     }
+                    Spacer(minLength: 0)
+                    if app.sharedWarmth.pendingUploadCount > 0 {
+                        Text("\(app.sharedWarmth.pendingUploadCount)")
+                            .font(Type.caption.weight(.semibold))
+                            .foregroundStyle(Palette.caution)
+                            .monospacedDigit()
+                    }
                 }
-                .tint(Palette.brand)
-
-                if case .unavailable(let reason) = app.sync.status {
-                    Label(reason, systemImage: "exclamationmark.icloud")
-                        .font(Type.caption)
-                        .foregroundStyle(Palette.caution)
-                }
-
-                Label(
-                    "Turning sharing on or off takes effect the next time FieldForge starts, because the whole store has to be reopened.",
-                    systemImage: "info.circle"
-                )
-                .font(Type.caption)
-                .foregroundStyle(Palette.textTertiary)
-            } else {
-                LockedFeatureRow(feature: .sharedTeamMemory)
             }
         } header: {
             Text("Team")
         } footer: {
-            Text("Private notes on a contact or a visit never sync, on any tier.")
+            Text("Warmth ratings, giving history and team notes are shared. Private notes on a contact or a visit never leave this iPhone, on any tier.")
         }
     }
 

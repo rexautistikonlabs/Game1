@@ -9,8 +9,13 @@
 		<string>merchant.org.example.fieldforge</string>
 	</array>
 
-	<!-- Shared organizational memory (Pro). SwiftData drives CloudKit directly;
-	     see Services/SyncEngine.swift for the model constraints this imposes. -->
+	<!-- Shared organizational memory (Pro).
+	     Two things ride on this container, and they are different mechanisms:
+	       * the private store is optionally mirrored by SwiftData to the user's
+	         own private database, keeping their iPhone and iPad in step;
+	       * the projection store is moved by SharedWarmthService over a
+	         CloudKit *shared* record zone, which SwiftData cannot target.
+	     `CKSharingSupported` below is what lets an invite link open the app. -->
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
 		<string>iCloud.org.example.fieldforge</string>

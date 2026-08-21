@@ -23,6 +23,7 @@ struct WhoStepView: View {
     @Binding var draft: DocumentDraft
 
     @Environment(\.appEnvironment) private var app
+    @Environment(\.modelContext) private var context
 
     @Query(sort: \Contact.updatedAt, order: .reverse) private var allContacts: [Contact]
 
@@ -36,6 +37,8 @@ struct WhoStepView: View {
     /// an empty name field would collapse the form the moment it appeared.
     @State private var isTypingManually = false
     @State private var nearby: [Contact] = []
+    @State private var isFindingNearby = false
+
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
@@ -51,13 +54,13 @@ struct WhoStepView: View {
         }
         .task { await refreshNearby() }
         .sheet(isPresented: $isPresentingSignScanner) {
-            TextCaptureScannerView(mode: .sign) { candidate in
-                apply(candidate, source: .signOCR)
+            TextCaptureScannerView(mode: .sign) { candidate, frame in
+                apply(candidate, source: .signOCR, frame: frame)
             }
         }
         .sheet(isPresented: $isPresentingCardScanner) {
-            TextCaptureScannerView(mode: .businessCard) { candidate in
-                apply(candidate, source: .businessCard)
+            TextCaptureScannerView(mode: .businessCard) { candidate, frame in
+                apply(candidate, source: .businessCard, frame: frame)
             }
         }
         .sheet(isPresented: $isPresentingSystemPicker) {
@@ -342,7 +345,16 @@ struct WhoStepView: View {
     /// else already visited and knowing it.
     @ViewBuilder
     private var nearbySection: some View {
-        if !nearby.isEmpty {
+        if isFindingNearby, nearby.isEmpty {
+            HStack(spacing: Space.sm) {
+                ProgressView()
+                Text("Checking whether we have been here before…")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textSecondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .cardSurface(padding: Space.sm)
+        } else if !nearby.isEmpty {
             VStack(alignment: .leading, spacing: Space.sm) {
                 SectionHeader(title: "Right here", subtitle: "Already in your records")
                 ForEach(nearby.prefix(5)) { contact in
@@ -355,6 +367,8 @@ struct WhoStepView: View {
     }
 
     private func refreshNearby() async {
+        isFindingNearby = true
+        defer { isFindingNearby = false }
         guard let fix = await app.location.currentLocation(maximumAge: 120) else { return }
         let radius: CLLocationDistance = 250
         nearby = allContacts
@@ -425,9 +439,14 @@ struct WhoStepView: View {
         draft.touch()
     }
 
-    private func apply(_ candidate: ParsedContactCandidate, source: ContactSource) {
+    private func apply(_ candidate: ParsedContactCandidate, source: ContactSource, frame: Data? = nil) {
         isPresentingSignScanner = false
         isPresentingCardScanner = false
+        // Save the photo immediately rather than holding it in view state. A
+        // photo of a storefront is the one thing here that cannot be
+        // reconstructed, so it goes to disk before anything else can go wrong;
+        // `DraftCommitter` links it to the visit at commit time.
+        if let frame { persistScanFrame(frame, source: source) }
 
         // If we already know this business, prefer the existing record — the
         // history on it is worth far more than a fresh duplicate.
@@ -453,6 +472,28 @@ struct WhoStepView: View {
             : "Filled in \(filled.formatted(.list(type: .and))). Check it before you send."
         Haptics.success()
         draft.touch()
+    }
+
+    private func persistScanFrame(_ data: Data, source: ContactSource) {
+        let attachment = Attachment(
+            kind: source == .businessCard ? .businessCard : .locationProof,
+            data: data,
+            caption: source == .businessCard ? "Scanned card" : "Scanned sign"
+        )
+        attachment.isCapturedLive = true
+        attachment.latitude = draft.latitude
+        attachment.longitude = draft.longitude
+        attachment.generateThumbnail()
+        context.insert(attachment)
+        do {
+            try context.save()
+            draft.attachmentIDs.append(attachment.id)
+            draft.touch()
+        } catch {
+            // Losing the photo is bad but must not block the capture.
+            AppLog.capture.error("Could not save the scanned frame: \(error.localizedDescription, privacy: .public)")
+            context.rollback()
+        }
     }
 
     /// Duplicate detection: same name, or same name within the same city. Not

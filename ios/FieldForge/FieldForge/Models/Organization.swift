@@ -79,7 +79,63 @@ final class Organization {
     /// `true` prints the letterhead as a full-width colour band with reversed
     /// text; `false` prints a restrained rule under black text. Both look like
     /// a real office, they just suit different brands.
+    ///
+    /// Kept for compatibility with documents issued before `letterheadStyle`
+    /// existed; new code should read that instead.
     var usesColorBandLetterhead: Bool = false
+
+    /// Raw storage for the enum below. Internal rather than private so
+    /// `#Predicate` and SwiftUI's `onChange` in other files can observe it.
+    /// Empty by default, deliberately. SwiftData's lightweight migration gives
+    /// existing rows the declared default, so defaulting this to `classic`
+    /// would silently strip the colour band from every organization that had
+    /// already chosen it. Empty means "never set", and the getter then falls
+    /// back to the old boolean.
+    var letterheadStyleRawValue: String = ""
+    /// How the top of the page is built. Four genuinely different looks rather
+    /// than a slider, because a nonprofit picking a letterhead wants to choose
+    /// between finished designs, not tune one.
+    var letterheadStyle: LetterheadStyle {
+        get {
+            // Honour the old boolean for organizations that set it before the
+            // style enum existed.
+            if let stored = LetterheadStyle(rawValue: letterheadStyleRawValue) { return stored }
+            return usesColorBandLetterhead ? .colorBand : .classic
+        }
+        set {
+            letterheadStyleRawValue = newValue.rawValue
+            usesColorBandLetterhead = (newValue == .colorBand)
+        }
+    }
+
+    /// Raw storage for the enum below. Internal rather than private so
+    /// `#Predicate` and SwiftUI's `onChange` in other files can observe it.
+    var typefaceRawValue: String = DocumentTypeface.serif.rawValue
+    /// The type family for document body text. Restricted to the four font
+    /// *designs* that ship with iOS — a real custom font would need a licence
+    /// the app cannot grant, and a missing font file at render time would be a
+    /// blank receipt.
+    var typeface: DocumentTypeface {
+        get { DocumentTypeface(rawValue: typefaceRawValue) ?? .serif }
+        set { typefaceRawValue = newValue.rawValue }
+    }
+
+    /// Raw storage for the enum below. Internal rather than private so
+    /// `#Predicate` and SwiftUI's `onChange` in other files can observe it.
+    var footerStyleRawValue: String = FooterStyle.legalMinimum.rawValue
+    /// What prints at the very bottom of every page.
+    var footerStyle: FooterStyle {
+        get { FooterStyle(rawValue: footerStyleRawValue) ?? .legalMinimum }
+        set { footerStyleRawValue = newValue.rawValue }
+    }
+
+    /// Mission or tagline line for the footer, when `footerStyle` includes it.
+    var missionStatement: String = ""
+
+    /// Prints in-kind item photos into the acknowledgment letter. Off by
+    /// default: a letter is a formal document and photographs change its
+    /// character, so this is a deliberate choice rather than a surprise.
+    var includesInKindPhotosInLetter: Bool = false
 
     // MARK: Signature
 

@@ -133,6 +133,9 @@ enum DeliveryState: String, CaseIterable, Codable, Sendable {
     case failed
     /// Superseded by a re-issue. Kept for the audit trail, hidden by default.
     case superseded
+    /// Withdrawn deliberately — a bounced cheque, a duplicate, a wrong donor.
+    /// Distinct from `superseded`: nothing replaces it.
+    case voided
 
     var label: String {
         switch self {
@@ -141,6 +144,7 @@ enum DeliveryState: String, CaseIterable, Codable, Sendable {
         case .sent: return "Sent"
         case .failed: return "Send failed"
         case .superseded: return "Re-issued"
+        case .voided: return "Voided"
         }
     }
 
@@ -151,6 +155,7 @@ enum DeliveryState: String, CaseIterable, Codable, Sendable {
         case .sent: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.triangle.fill"
         case .superseded: return "arrow.triangle.2.circlepath"
+        case .voided: return "xmark.octagon.fill"
         }
     }
 }
@@ -396,6 +401,131 @@ enum ContactWindow: String, CaseIterable, Codable, Identifiable, Sendable {
         case .evening: return "Evening"
         case .byAppointment: return "By appointment only"
         case .neverDuringRush: return "Avoid the rush"
+        }
+    }
+}
+
+// MARK: - Document appearance
+
+/// How the top of a document page is built.
+///
+/// Four finished designs rather than a set of independent toggles. A nonprofit
+/// choosing their letterhead wants to pick between things that already look
+/// right, not to discover that "logo left + band on + tagline centred" produces
+/// something nobody would put in an envelope.
+enum LetterheadStyle: String, CaseIterable, Codable, Identifiable, Sendable {
+    /// Centred logo, name, tagline, then a hairline rule. The safest, most
+    /// traditional letterhead, and the default.
+    case classic
+    /// Full-width brand-colour band with reversed text. Confident, and the one
+    /// that reads best when the organization has a strong logo.
+    case colorBand
+    /// Logo and contact block on opposite sides of a single line. Modern,
+    /// compact, and leaves the most room for the letter itself.
+    case split
+    /// Name and EIN in small type, no logo, no rule. For organizations printing
+    /// onto pre-printed stationery that already has their letterhead on it.
+    case minimal
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .classic: return "Classic"
+        case .colorBand: return "Colour band"
+        case .split: return "Split"
+        case .minimal: return "Minimal"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .classic: return "Centred logo and address over a hairline rule. Traditional and safe."
+        case .colorBand: return "Full-width band in your brand colour with reversed text."
+        case .split: return "Logo left, contact details right, on one line. Compact."
+        case .minimal: return "Name and EIN only — for printing onto your own stationery."
+        }
+    }
+
+    /// The minimal style deliberately omits the logo, so the branding screen
+    /// should not nag about a missing one.
+    var showsLogo: Bool { self != .minimal }
+
+    /// Advanced styles are part of the paid tier; classic and minimal are free,
+    /// and both produce a document nobody would be embarrassed to hand over.
+    var requiresAdvancedBranding: Bool {
+        switch self {
+        case .classic, .minimal: return false
+        case .colorBand, .split: return true
+        }
+    }
+}
+
+/// Body typeface for documents.
+///
+/// These are the four font *designs* built into iOS, not font files. That is a
+/// deliberate limit: shipping a licensed typeface is a legal question the app
+/// cannot answer for a user, and a missing font at render time would produce a
+/// blank page in front of a donor.
+enum DocumentTypeface: String, CaseIterable, Codable, Identifiable, Sendable {
+    /// New York. The default for letters — a formal acknowledgment set in the
+    /// system sans reads like a push notification.
+    case serif
+    /// SF Pro. Right for receipts, and for organizations with a modern brand.
+    case sans
+    /// SF Rounded. Softer; suits youth and family services.
+    case rounded
+    /// SF Mono. Unusual, but a few organizations genuinely want it for
+    /// figure-heavy documents.
+    case monospaced
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .serif: return "Serif"
+        case .sans: return "Sans"
+        case .rounded: return "Rounded"
+        case .monospaced: return "Monospaced"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .serif: return "New York. Formal, and the traditional choice for a letter."
+        case .sans: return "San Francisco. Clean and modern."
+        case .rounded: return "Softer and friendlier. Suits family and youth services."
+        case .monospaced: return "Figures line up exactly. Unusual for a letter."
+        }
+    }
+}
+
+/// What prints at the very bottom of every document page.
+enum FooterStyle: String, CaseIterable, Codable, Identifiable, Sendable {
+    /// Legal name and EIN. Everything the IRS needs and nothing else.
+    case legalMinimum
+    /// Legal name, EIN, and the organization's mission line.
+    case withMission
+    /// Legal name, EIN, and full contact details repeated.
+    case withContactDetails
+    /// Nothing at all — for pre-printed stationery that already has a footer.
+    case none
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .legalMinimum: return "Name and EIN"
+        case .withMission: return "Name, EIN and mission"
+        case .withContactDetails: return "Name, EIN and contact details"
+        case .none: return "Nothing"
+        }
+    }
+
+    var requiresAdvancedBranding: Bool {
+        switch self {
+        case .legalMinimum, .none: return false
+        case .withMission, .withContactDetails: return true
         }
     }
 }

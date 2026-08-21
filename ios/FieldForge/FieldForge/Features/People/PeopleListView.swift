@@ -31,6 +31,8 @@ struct PeopleListView: View {
     @State private var warmthFilter: Warmth?
     @State private var isPresentingEditor = false
 
+    @Environment(\.appEnvironment) private var app
+
     enum SortOption: String, CaseIterable, Identifiable {
         case recent
         case warmest
@@ -78,6 +80,12 @@ struct PeopleListView: View {
             .navigationTitle("People")
             .searchable(text: $searchText, prompt: "Name, city, tag, or note")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    ConnectivityPill(
+                        reachability: app.reachability,
+                        queuedCount: app.sharedWarmth.pendingUploadCount
+                    )
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Picker("Sort", selection: $sort) {
@@ -113,6 +121,17 @@ struct PeopleListView: View {
 
     private var list: some View {
         List {
+            if !app.reachability.isOnline, app.sharedWarmth.state.isActive {
+                Section {
+                    Label(
+                        "Offline. Your own changes are saving; teammates' updates arrive when you reconnect.",
+                        systemImage: "wifi.slash"
+                    )
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textSecondary)
+                }
+            }
+
             if !filtered.isEmpty {
                 Section {
                     ForEach(filtered) { contact in

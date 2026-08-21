@@ -25,6 +25,13 @@ struct DocumentDraft: Codable, Equatable, Identifiable {
     /// Set when the staffer picked an existing contact.
     var existingContactID: UUID?
 
+    /// Set when a `Visit` has already been committed for this interaction —
+    /// which is what a one-shot scan does before the flow even opens.
+    ///
+    /// Without this, committing the draft would create a *second* visit for the
+    /// same doorstep, double-counting the day's doors and the conversion rate.
+    var committedVisitID: UUID?
+
     /// Filled in when creating someone new, or when OCR pre-filled fields.
     var newContact = NewContactFields()
 

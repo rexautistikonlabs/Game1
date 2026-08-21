@@ -2,17 +2,23 @@
 //  TodayView.swift
 //  FieldForge
 //
-//  The screen the app opens to, designed around one question: what should I do
-//  in the next ten seconds?
+//  The screen the app opens to, built around one question: **what should I do
+//  in the next ten seconds?**
 //
-//  Order of the page is the order of urgency:
-//    1. Anything broken (setup missing, storage degraded, documents stuck).
-//    2. Follow-ups due now — the reason today is different from yesterday.
-//    3. Today's numbers, small, for the sense of progress that keeps a
-//       volunteer walking.
-//    4. Warm contacts nearby, which is the feature that turns a spare twenty
-//       minutes into a visit.
-//    5. Recent activity, so a mistake is easy to find and fix.
+//  Ordered by urgency, not by category:
+//
+//   1. Anything broken — setup missing, storage degraded, documents stuck.
+//   2. Who to see today. The single most useful thing the app knows, and now
+//      the top of the screen rather than buried under statistics.
+//   3. Route mode, when there is enough to route.
+//   4. Today's numbers, small, for the sense of progress that keeps a
+//      volunteer walking.
+//   5. What the team has been doing, when sharing is on.
+//   6. Recent activity, so a mistake is easy to find and fix.
+//
+//  Everything here is derived from local data. No spinner blocks the first
+//  paint, and every section degrades to a useful empty state rather than
+//  vanishing.
 //
 
 import CoreLocation
@@ -23,49 +29,42 @@ import SwiftUI
 struct TodayView: View {
 
     let onStartCapture: () -> Void
+    let onStartRoute: () -> Void
 
     @Environment(\.appEnvironment) private var app
 
-    /// Fetched with `@Query` so the screen updates the instant a gift is saved
-    /// anywhere in the app — no manual refresh, no stale totals.
     @Query(sort: \Gift.receivedAt, order: .reverse) private var allGifts: [Gift]
     @Query(sort: \Visit.occurredAt, order: .reverse) private var allVisits: [Visit]
     @Query(filter: #Predicate<FollowUp> { $0.completedAt == nil }, sort: \FollowUp.dueAt)
     private var openFollowUps: [FollowUp]
-    @Query(sort: \Contact.updatedAt, order: .reverse) private var contacts: [Contact]
+    @Query(filter: #Predicate<Contact> { $0.isArchived == false }, sort: \Contact.updatedAt, order: .reverse)
+    private var contacts: [Contact]
 
     @State private var isPresentingPaywall = false
     @State private var isPresentingOutbox = false
-    @State private var nearbyContacts: [NearbyContact] = []
+    @State private var nearby: [NearbyContact] = []
+    @State private var locationState: LocationSectionState = .idle
+
+    /// Distinguishes "still looking" from "looked, found nothing" from "cannot
+    /// look" — three states that need three different messages, and which a
+    /// single optional array cannot express.
+    private enum LocationSectionState: Equatable {
+        case idle
+        case locating
+        case ready
+        case denied
+        case unavailable
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Space.lg) {
-                    if let organization = app.activeOrganization(), !organization.isReadyToIssueDocuments {
-                        setupNudge(organization)
-                    }
-
-                    if app.outbox.pendingCount > 0 {
-                        InlineBanner(
-                            kind: app.reachability.isOnline ? .info : .caution,
-                            message: outboxMessage,
-                            actionTitle: "Open"
-                        ) {
-                            isPresentingOutbox = true
-                        }
-                    }
-
-                    if app.payments.isSimulatingPayments {
-                        InlineBanner(
-                            kind: .critical,
-                            message: "Payments are simulated in this build. Nothing is actually charged, and receipts from it are not real."
-                        )
-                    }
-
-                    dueFollowUpsSection
-                    todaySection
-                    nearbySection
+                    problemsSection
+                    whoToSeeSection
+                    routeSection
+                    numbersSection
+                    teamSection
                     recentSection
                 }
                 .padding(.horizontal, Space.screenEdge)
@@ -94,25 +93,59 @@ struct TodayView: View {
             .task { await refreshNearby() }
             .refreshable {
                 await app.outbox.drain()
+                await app.sharedWarmth.sync()
                 await refreshNearby()
             }
         }
     }
 
-    // MARK: Greeting
+    // MARK: 1. Problems
 
-    /// Time-of-day greeting with the staffer's name when we know it. Small
-    /// thing; it makes the app feel like theirs rather than the organization's.
-    private var greeting: String {
-        let hour = Calendar.current.component(.hour, from: .now)
-        let salutation: String
-        switch hour {
-        case 0..<12: salutation = "Good morning"
-        case 12..<17: salutation = "Good afternoon"
-        default: salutation = "Good evening"
+    @ViewBuilder
+    private var problemsSection: some View {
+        if let organization = app.activeOrganization(), !organization.isReadyToIssueDocuments {
+            NavigationLink {
+                OrganizationEditorView(organization: organization)
+            } label: {
+                HStack(spacing: Space.md) {
+                    Image(systemName: "building.2.crop.circle.badge.plus")
+                        .font(.title2)
+                        .foregroundStyle(Palette.brand)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Finish setting up your organization")
+                            .font(Type.body.weight(.semibold))
+                            .foregroundStyle(Palette.textPrimary)
+                        Text(organization.missingRequiredBrandingFields.joined(separator: " · "))
+                            .font(Type.caption)
+                            .foregroundStyle(Palette.textSecondary)
+                            .multilineTextAlignment(.leading)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Palette.textTertiary)
+                }
+                .cardSurface()
+            }
+            .buttonStyle(.plain)
         }
-        guard let name = app.staffDisplayName.trimmedOrNil else { return salutation }
-        return "\(salutation), \(name.split(separator: " ").first.map(String.init) ?? name)"
+
+        if app.outbox.pendingCount > 0 {
+            InlineBanner(
+                kind: app.reachability.isOnline ? .info : .caution,
+                message: outboxMessage,
+                actionTitle: "Open"
+            ) {
+                isPresentingOutbox = true
+            }
+        }
+
+        if app.payments.isSimulatingPayments {
+            InlineBanner(
+                kind: .critical,
+                message: "Payments are simulated in this build. Nothing is actually charged, and receipts from it are not real."
+            )
+        }
     }
 
     private var outboxMessage: String {
@@ -124,54 +157,140 @@ struct TodayView: View {
         return "\(count) \(noun) ready to send."
     }
 
-    // MARK: Setup nudge
+    // MARK: 2. Who to see today
 
-    private func setupNudge(_ organization: Organization) -> some View {
-        NavigationLink {
-            OrganizationEditorView(organization: organization)
-        } label: {
-            HStack(spacing: Space.md) {
-                Image(systemName: "building.2.crop.circle.badge.plus")
-                    .font(.title2)
-                    .foregroundStyle(Palette.brand)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Finish setting up your organization")
-                        .font(Type.body.weight(.semibold))
-                        .foregroundStyle(Palette.textPrimary)
-                    Text(organization.missingRequiredBrandingFields.joined(separator: " · "))
-                        .font(Type.caption)
-                        .foregroundStyle(Palette.textSecondary)
-                        .multilineTextAlignment(.leading)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Palette.textTertiary)
-            }
-            .cardSurface()
+    /// One ranked list rather than three competing ones.
+    ///
+    /// A staffer does not think "overdue follow-ups, then due-today follow-ups,
+    /// then nearby warm contacts". They think "who should I see". So the
+    /// candidates are merged and scored, and the reason each one made the list
+    /// is shown on its row — which is what makes the ranking trustworthy rather
+    /// than magic.
+    private struct Suggestion: Identifiable {
+        let contact: Contact
+        let reason: String
+        let urgency: Int
+        let followUp: FollowUp?
+        let distance: CLLocationDistance?
+
+        var id: UUID { contact.id }
+
+        var distanceDescription: String? {
+            guard let distance else { return nil }
+            return Measurement(value: distance, unit: UnitLength.meters)
+                .formatted(.measurement(width: .abbreviated, usage: .road))
         }
-        .buttonStyle(.plain)
     }
 
-    // MARK: Follow-ups
+    private var suggestions: [Suggestion] {
+        var byContact: [UUID: Suggestion] = [:]
+        let nearbyByID = Dictionary(
+            nearby.map { ($0.contact.id, $0.distanceMeters) },
+            uniquingKeysWith: { first, _ in first }
+        )
 
-    private var dueFollowUps: [FollowUp] {
-        openFollowUps.filter { $0.isOverdue || $0.isDueToday }
+        func consider(_ candidate: Suggestion) {
+            if let existing = byContact[candidate.contact.id], existing.urgency >= candidate.urgency {
+                return
+            }
+            byContact[candidate.contact.id] = candidate
+        }
+
+        for followUp in openFollowUps {
+            guard let contact = followUp.contact, !contact.isDoNotContact, !contact.isArchived else { continue }
+            if followUp.isOverdue, !followUp.isDueToday {
+                let days = Calendar.current.dateComponents([.day], from: followUp.dueAt, to: .now).day ?? 0
+                consider(Suggestion(
+                    contact: contact,
+                    reason: days > 0 ? "Overdue by \(days) day\(days == 1 ? "" : "s")" : "Overdue",
+                    urgency: 100,
+                    followUp: followUp,
+                    distance: nearbyByID[contact.id]
+                ))
+            } else if followUp.isDueToday {
+                consider(Suggestion(
+                    contact: contact,
+                    reason: "Due today · \(followUp.kind.label)",
+                    urgency: 90,
+                    followUp: followUp,
+                    distance: nearbyByID[contact.id]
+                ))
+            }
+        }
+
+        // Warm contacts you happen to be standing near. Lower urgency than a
+        // commitment, but this is the row that turns a spare twenty minutes
+        // into a gift.
+        for entry in nearby {
+            let contact = entry.contact
+            guard !contact.isDoNotContact else { continue }
+            let reason = contact.warmth == .champion
+                ? "Champion, \(entry.distanceDescription) away"
+                : "Warm, \(entry.distanceDescription) away"
+            consider(Suggestion(
+                contact: contact,
+                reason: reason,
+                urgency: contact.warmth == .champion ? 60 : 50,
+                followUp: nil,
+                distance: entry.distanceMeters
+            ))
+        }
+
+        // Someone warm who has not been seen in a long time. Quietly the most
+        // valuable category in fundraising and the easiest to forget.
+        let staleCutoff = Calendar.current.date(byAdding: .month, value: -9, to: .now) ?? .distantPast
+        for contact in contacts where !contact.isDoNotContact {
+            guard contact.warmth == .warm || contact.warmth == .champion else { continue }
+            guard let lastVisit = contact.lastVisitAt, lastVisit < staleCutoff else { continue }
+            consider(Suggestion(
+                contact: contact,
+                reason: "Warm, not seen since \(lastVisit.formatted(.dateTime.month(.abbreviated).year()))",
+                urgency: 40,
+                followUp: nil,
+                distance: nearbyByID[contact.id]
+            ))
+        }
+
+        return byContact.values.sorted { left, right in
+            if left.urgency != right.urgency { return left.urgency > right.urgency }
+            // Within the same urgency, nearest first — that is the tiebreak
+            // that saves actual walking.
+            switch (left.distance, right.distance) {
+            case let (l?, r?): return l < r
+            case (.some, nil): return true
+            case (nil, .some): return false
+            case (nil, nil): return left.contact.displayName < right.contact.displayName
+            }
+        }
     }
 
     @ViewBuilder
-    private var dueFollowUpsSection: some View {
-        if !dueFollowUps.isEmpty {
-            VStack(alignment: .leading, spacing: Space.sm) {
-                SectionHeader(
-                    title: "Due now",
-                    subtitle: dueFollowUps.count == 1 ? "1 follow-up" : "\(dueFollowUps.count) follow-ups"
-                )
-                ForEach(dueFollowUps.prefix(4)) { followUp in
-                    FollowUpRow(followUp: followUp)
+    private var whoToSeeSection: some View {
+        let list = suggestions
+        VStack(alignment: .leading, spacing: Space.sm) {
+            SectionHeader(
+                title: "Who to see today",
+                subtitle: list.isEmpty ? nil : "\(list.count) worth a knock"
+            )
+
+            if list.isEmpty {
+                emptyWhoToSee
+            } else {
+                ForEach(list.prefix(6)) { suggestion in
+                    NavigationLink {
+                        ContactDetailView(contact: suggestion.contact)
+                    } label: {
+                        SuggestionRow(
+                            contact: suggestion.contact,
+                            reason: suggestion.reason,
+                            distance: suggestion.distanceDescription,
+                            isCommitment: suggestion.followUp != nil
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
-                if dueFollowUps.count > 4 {
-                    NavigationLink("See all \(dueFollowUps.count)") { FollowUpsView() }
+                if list.count > 6 {
+                    NavigationLink("See all \(list.count)") { FollowUpsView() }
                         .font(Type.secondary.weight(.medium))
                         .foregroundStyle(Palette.brand)
                 }
@@ -179,7 +298,99 @@ struct TodayView: View {
         }
     }
 
-    // MARK: Today's numbers
+    /// Four different empty states, because the right thing to say depends
+    /// entirely on why the list is empty.
+    @ViewBuilder
+    private var emptyWhoToSee: some View {
+        if contacts.isEmpty {
+            EmptyStateView(
+                symbol: "person.crop.circle.badge.plus",
+                title: "Nobody in here yet",
+                message: "Long-press Capture and scan a shop sign. FieldForge reads the name and address and saves the visit in one go.",
+                actionTitle: "Capture your first visit",
+                action: onStartCapture
+            )
+            .cardSurface()
+        } else {
+            switch locationState {
+            case .locating:
+                HStack(spacing: Space.sm) {
+                    ProgressView()
+                    Text("Looking for warm contacts near you…")
+                        .font(Type.secondary)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .cardSurface(padding: Space.sm)
+
+            case .denied:
+                InlineBanner(
+                    kind: .info,
+                    message: "Turn on location and FieldForge will show warm contacts within a short walk. Everything else works without it."
+                )
+
+            case .idle, .ready, .unavailable:
+                EmptyStateView(
+                    symbol: "checkmark.circle",
+                    title: "Nothing owed today",
+                    message: "No follow-ups due and nobody warm nearby. A good day to knock on new doors.",
+                    actionTitle: "Capture a new visit",
+                    action: onStartCapture
+                )
+                .cardSurface()
+            }
+        }
+    }
+
+    // MARK: 3. Route
+
+    /// Only offered when there is actually something to route. A route button
+    /// that produces a one-stop route is worse than no button.
+    @ViewBuilder
+    private var routeSection: some View {
+        let routable = suggestions.filter { $0.contact.coordinate != nil }
+        if routable.count >= 2 {
+            let isUnlocked = app.entitlements.isEnabled(.routeMode)
+            Button {
+                if isUnlocked { onStartRoute() } else { isPresentingPaywall = true }
+            } label: {
+                HStack(spacing: Space.md) {
+                    Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(Color("RoutePath"), in: RoundedRectangle(cornerRadius: Space.cornerSmall, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: Space.xs) {
+                            Text("Walk them as a route")
+                                .font(Type.body.weight(.semibold))
+                                .foregroundStyle(Palette.textPrimary)
+                            if !isUnlocked {
+                                Image(systemName: "lock.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(Palette.textTertiary)
+                            }
+                        }
+                        Text(isUnlocked
+                             ? "\(routable.count) stops, ordered by walking distance"
+                             : "Route mode is part of FieldForge Team")
+                            .font(Type.caption)
+                            .foregroundStyle(Palette.textSecondary)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Palette.textTertiary)
+                }
+                .cardSurface()
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(isUnlocked ? "Orders today's stops by walking distance" : "Part of FieldForge Team")
+        }
+    }
+
+    // MARK: 4. Numbers
 
     private var todayGifts: [Gift] {
         allGifts.filter {
@@ -191,30 +402,23 @@ struct TodayView: View {
         allVisits.filter { Calendar.current.isDateInToday($0.occurredAt) }
     }
 
-    private var todaySection: some View {
+    private var numbersSection: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            SectionHeader(title: "Today")
+            SectionHeader(title: "Today so far")
 
             HStack(spacing: Space.sm) {
                 StatTile(
                     value: Money.sum(todayGifts.map(\.amount)).formattedCompact,
                     label: "Raised",
-                    systemImage: "arrow.up.right"
+                    systemImage: "arrow.up.right",
+                    tint: Palette.positive
                 )
-                StatTile(
-                    value: "\(todayVisits.count)",
-                    label: "Doors",
-                    systemImage: "figure.walk"
-                )
-                StatTile(
-                    value: "\(todayGifts.count)",
-                    label: "Gifts",
-                    systemImage: "gift.fill"
-                )
+                StatTile(value: "\(todayVisits.count)", label: "Doors", systemImage: "figure.walk")
+                StatTile(value: "\(todayGifts.count)", label: "Gifts", systemImage: "gift.fill")
             }
 
             if todayVisits.isEmpty && todayGifts.isEmpty {
-                Text("Nothing recorded yet today. Tap Capture when you are at your first door.")
+                Text("Nothing recorded yet today. Tap Capture at your first door.")
                     .font(Type.caption)
                     .foregroundStyle(Palette.textSecondary)
             } else if !todayVisits.isEmpty {
@@ -228,105 +432,53 @@ struct TodayView: View {
         }
     }
 
-    // MARK: Nearby
-
-    struct NearbyContact: Identifiable {
-        let contact: Contact
-        let distanceMeters: CLLocationDistance
-        var id: UUID { contact.id }
-
-        var distanceDescription: String {
-            let measurement = Measurement(value: distanceMeters, unit: UnitLength.meters)
-            return measurement.formatted(
-                .measurement(width: .abbreviated, usage: .road)
-            )
-        }
-    }
+    // MARK: 5. Team
 
     @ViewBuilder
-    private var nearbySection: some View {
-        if !nearbyContacts.isEmpty {
-            VStack(alignment: .leading, spacing: Space.sm) {
-                SectionHeader(
-                    title: "Warm nearby",
-                    subtitle: "People worth a knock while you are here",
-                    actionTitle: "Map"
-                ) {}
-                ForEach(nearbyContacts.prefix(4)) { nearby in
-                    NavigationLink {
-                        ContactDetailView(contact: nearby.contact)
-                    } label: {
+    private var teamSection: some View {
+        if app.sharedWarmth.state.isActive {
+            let teamOnly = app.sharedWarmth.teamOnlyProjections()
+            if !teamOnly.isEmpty {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    SectionHeader(
+                        title: "From your team",
+                        subtitle: "Places a colleague has already been"
+                    )
+                    ForEach(teamOnly.prefix(3), id: \.contactID) { projection in
                         HStack(spacing: Space.md) {
-                            WarmthBadge(warmth: nearby.contact.warmth, showsLabel: false)
+                            WarmthBadge(warmth: projection.warmth, showsLabel: false)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(nearby.contact.displayName)
+                                Text(projection.displayName)
                                     .font(Type.body.weight(.medium))
                                     .foregroundStyle(Palette.textPrimary)
-                                Text(nearby.contact.subtitle)
+                                Text(projection.lastUpdatedByDisplayName.trimmedOrNil.map { "via \($0)" }
+                                     ?? projection.subtitleLine)
                                     .font(Type.caption)
                                     .foregroundStyle(Palette.textSecondary)
                                     .lineLimit(1)
                             }
-                            Spacer(minLength: Space.sm)
-                            Text(nearby.distanceDescription)
-                                .font(Type.caption.weight(.medium))
-                                .foregroundStyle(Palette.textSecondary)
-                                .monospacedDigit()
+                            Spacer(minLength: 0)
+                            if projection.giftCount > 0 {
+                                Text(projection.lifetimeGiving.formattedCompact)
+                                    .font(Type.caption.weight(.semibold))
+                                    .foregroundStyle(Palette.positive)
+                                    .monospacedDigit()
+                            }
                         }
                         .cardSurface(padding: Space.sm)
+                        .accessibilityElement(children: .combine)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(nearby.contact.displayName), \(nearby.contact.warmth.label), \(nearby.distanceDescription) away")
                 }
             }
         }
     }
 
-    /// Finds warm contacts within walking distance of the current fix.
-    ///
-    /// Done in-memory rather than with a spatial query: SwiftData has no
-    /// geospatial index, and a field CRM with tens of thousands of contacts in
-    /// one city is not a real shape. If it becomes one, this becomes a
-    /// bounding-box predicate before it becomes a problem.
-    private func refreshNearby() async {
-        guard app.location.authorization != .denied else {
-            nearbyContacts = []
-            return
-        }
-        guard let fix = await app.location.currentLocation(maximumAge: 300) else {
-            nearbyContacts = []
-            return
-        }
-
-        let radius: CLLocationDistance = 800   // roughly a ten-minute walk
-        let found = contacts.compactMap { contact -> NearbyContact? in
-            guard !contact.isDoNotContact, !contact.isArchived else { return nil }
-            guard contact.warmth == .warm || contact.warmth == .champion else { return nil }
-            guard let coordinate = contact.coordinate else { return nil }
-            let distance = fix.distance(
-                from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-            )
-            guard distance <= radius else { return nil }
-            return NearbyContact(contact: contact, distanceMeters: distance)
-        }
-        nearbyContacts = found.sorted { $0.distanceMeters < $1.distanceMeters }
-    }
-
-    // MARK: Recent
+    // MARK: 6. Recent
 
     @ViewBuilder
     private var recentSection: some View {
         let recent = Array(allVisits.prefix(6))
-        if recent.isEmpty {
-            EmptyStateView(
-                symbol: "figure.walk.motion",
-                title: "Nothing here yet",
-                message: "Tap Capture at your first door. Point the camera at the sign and FieldForge fills in the rest.",
-                actionTitle: "Capture your first visit",
-                action: onStartCapture
-            )
-            .cardSurface()
-        } else {
+        if !recent.isEmpty {
             VStack(alignment: .leading, spacing: Space.sm) {
                 SectionHeader(title: "Recent")
                 ForEach(recent) { visit in
@@ -342,148 +494,141 @@ struct TodayView: View {
             }
         }
     }
+
+    // MARK: Greeting
+
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: .now)
+        let salutation: String
+        switch hour {
+        case 0..<12: salutation = "Good morning"
+        case 12..<17: salutation = "Good afternoon"
+        default: salutation = "Good evening"
+        }
+        guard let name = app.staffDisplayName.trimmedOrNil else { return salutation }
+        return "\(salutation), \(name.split(separator: " ").first.map(String.init) ?? name)"
+    }
+
+    // MARK: Nearby
+
+    struct NearbyContact: Identifiable {
+        let contact: Contact
+        let distanceMeters: CLLocationDistance
+        var id: UUID { contact.id }
+
+        var distanceDescription: String {
+            Measurement(value: distanceMeters, unit: UnitLength.meters)
+                .formatted(.measurement(width: .abbreviated, usage: .road))
+        }
+    }
+
+    /// Finds warm contacts within walking distance of the current fix.
+    ///
+    /// In-memory rather than a spatial query: SwiftData has no geospatial
+    /// index, and a field CRM with tens of thousands of contacts in one city is
+    /// not a real shape. If it becomes one, this becomes a bounding-box
+    /// predicate before it becomes a problem.
+    private func refreshNearby() async {
+        guard app.location.authorization != .denied else {
+            locationState = .denied
+            nearby = []
+            return
+        }
+        locationState = .locating
+        guard let fix = await app.location.currentLocation(maximumAge: 300) else {
+            locationState = app.location.authorization == .denied ? .denied : .unavailable
+            nearby = []
+            return
+        }
+
+        let radius: CLLocationDistance = 800   // roughly a ten-minute walk
+        nearby = contacts
+            .compactMap { contact -> NearbyContact? in
+                guard !contact.isDoNotContact else { return nil }
+                guard contact.warmth == .warm || contact.warmth == .champion else { return nil }
+                guard let coordinate = contact.coordinate else { return nil }
+                let distance = fix.distance(
+                    from: CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                )
+                guard distance <= radius else { return nil }
+                return NearbyContact(contact: contact, distanceMeters: distance)
+            }
+            .sorted { $0.distanceMeters < $1.distanceMeters }
+        locationState = .ready
+    }
 }
 
-// MARK: - Rows
+// MARK: - Suggestion row
 
-/// A follow-up with its action attached. The button is the point: a reminder you
-/// can act on from the list is a reminder that gets done.
-struct FollowUpRow: View {
-    let followUp: FollowUp
-
-    @Environment(\.modelContext) private var context
-    @Environment(\.openURL) private var openURL
+/// A ranked suggestion, with the reason it is on the list. The reason is not
+/// decoration — an ordering nobody can explain is an ordering nobody trusts.
+private struct SuggestionRow: View {
+    let contact: Contact
+    let reason: String
+    let distance: String?
+    let isCommitment: Bool
 
     var body: some View {
         HStack(spacing: Space.md) {
-            Button {
-                Haptics.success()
-                followUp.complete()
-                Task { await NotificationScheduler.cancel(followUp) }
-                try? context.save()
-            } label: {
-                Image(systemName: "circle")
-                    .font(.title3)
-                    .foregroundStyle(Palette.textTertiary)
-                    .minimumTapTarget()
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Mark done")
+            WarmthBadge(warmth: contact.warmth, showsLabel: false)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(followUp.contact?.displayName ?? "Follow up")
+                Text(contact.displayName)
                     .font(Type.body.weight(.medium))
                     .foregroundStyle(Palette.textPrimary)
-                if let note = followUp.note.trimmedOrNil {
-                    Text(note)
-                        .font(Type.caption)
-                        .foregroundStyle(Palette.textSecondary)
-                        .lineLimit(2)
-                }
                 HStack(spacing: Space.xs) {
-                    Label(followUp.kind.label, systemImage: followUp.kind.symbolName)
-                    Text("·")
-                    Text(followUp.relativeDueDescription)
+                    if isCommitment {
+                        Image(systemName: "bell.fill")
+                            .font(.caption2)
+                            .accessibilityHidden(true)
+                    }
+                    Text(reason)
+                        .lineLimit(1)
                 }
                 .font(Type.caption)
-                .foregroundStyle(followUp.isOverdue ? Palette.critical : Palette.textTertiary)
+                .foregroundStyle(isCommitment ? Palette.caution : Palette.textSecondary)
+
+                if contact.contactWindow != .unknown {
+                    Text("Best \(contact.contactWindow.label.lowercased())")
+                        .font(.caption2)
+                        .foregroundStyle(Palette.textTertiary)
+                }
             }
 
             Spacer(minLength: Space.sm)
 
-            if let url = actionURL {
-                Button {
-                    openURL(url)
-                } label: {
-                    Image(systemName: followUp.kind.symbolName)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(Palette.brand)
-                        .frame(width: 40, height: 40)
-                        .background(Palette.brandMuted, in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(followUp.kind.label) \(followUp.contact?.displayName ?? "")")
-            }
-        }
-        .cardSurface(padding: Space.sm)
-        .swipeActions(edge: .trailing) {
-            Button("Snooze a week") {
-                followUp.snooze(byDays: 7)
-                Task { await NotificationScheduler.schedule(followUp) }
-                try? context.save()
-            }
-            .tint(Palette.caution)
-        }
-    }
-
-    /// The one-tap action, when the contact has the means for it.
-    private var actionURL: URL? {
-        guard let contact = followUp.contact, !contact.isDoNotContact else { return nil }
-        switch followUp.kind {
-        case .call: return ContactActions.callURL(for: contact.phone)
-        case .text: return ContactActions.messageURL(for: contact.phone)
-        case .email, .thankYou, .sendDocument:
-            return ContactActions.mailURL(for: contact.email, subject: "Thank you from our team")
-        case .visitAgain: return ContactActions.mapsURL(for: contact)
-        case .collectPledge: return ContactActions.callURL(for: contact.phone)
-        case .other: return nil
-        }
-    }
-}
-
-/// One line of history.
-struct VisitRow: View {
-    let visit: Visit
-    var showsContactName: Bool = false
-
-    var body: some View {
-        HStack(alignment: .top, spacing: Space.md) {
-            VStack(spacing: 2) {
-                Image(systemName: visit.outcome.symbolName)
-                    .font(.body)
-                    .foregroundStyle(visit.warmth == .unrated ? Palette.textTertiary : visit.warmth.tint)
-            }
-            .frame(width: 24)
-            .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 2) {
-                if showsContactName {
-                    Text(visit.contact?.displayName ?? "Unknown")
-                        .font(Type.body.weight(.medium))
-                        .foregroundStyle(Palette.textPrimary)
-                }
-                Text(visit.outcome.label)
-                    .font(showsContactName ? Type.caption : Type.body)
-                    .foregroundStyle(showsContactName ? Palette.textSecondary : Palette.textPrimary)
-                if let note = visit.notes.trimmedOrNil {
-                    Text(note)
-                        .font(Type.caption)
+            VStack(alignment: .trailing, spacing: 2) {
+                if let distance {
+                    Text(distance)
+                        .font(Type.caption.weight(.medium))
                         .foregroundStyle(Palette.textSecondary)
-                        .lineLimit(2)
+                        .monospacedDigit()
                 }
-            }
-
-            Spacer(minLength: Space.sm)
-
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(visit.occurredAt.formatted(.relative(presentation: .numeric)))
-                    .font(Type.caption)
-                    .foregroundStyle(Palette.textTertiary)
-                if let gift = visit.gift, gift.countsTowardGiving {
-                    Text(gift.isInKind ? "In-kind" : gift.amount.formattedCompact)
-                        .font(Type.caption.weight(.semibold))
+                if contact.giftCount > 0 {
+                    Text(contact.lifetimeGiving.formattedCompact)
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(Palette.positive)
                         .monospacedDigit()
                 }
             }
         }
         .cardSurface(padding: Space.sm)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            [
+                contact.displayName,
+                contact.warmth.label,
+                reason,
+                distance.map { "\($0) away" },
+            ]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+        )
     }
 }
 
 #Preview("Today") {
-    TodayView(onStartCapture: {})
-        .environment(\.appEnvironment, AppEnvironment.preview())
+    TodayView(onStartCapture: {}, onStartRoute: {})
+        .environment(\.appEnvironment, AppEnvironment.preview(tier: .team))
         .modelContainer(Persistence.previewContainer())
 }

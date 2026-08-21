@@ -104,6 +104,17 @@ final class GeneratedDocument {
     /// The original, when this record is a re-issue.
     var supersedes: GeneratedDocument?
 
+    /// Append-only history. See `DocumentAuditEntry` for why this is a
+    /// relationship rather than a handful of mutable fields.
+    @Relationship(deleteRule: .cascade, inverse: \DocumentAuditEntry.document)
+    var auditTrail: [DocumentAuditEntry]? = []
+
+    /// Set when the document is voided. The PDF and the trail are kept — a
+    /// voided receipt was still handed to somebody, and pretending otherwise
+    /// makes the history useless.
+    var voidedAt: Date?
+    var voidReason: String = ""
+
     init(kind: DocumentKind = .receipt, documentNumber: String = "") {
         self.kindRawValue = kind.rawValue
         self.documentNumber = documentNumber
@@ -120,6 +131,16 @@ final class GeneratedDocument {
     }
 
     var isRevision: Bool { revision > 0 }
+
+    /// Authoritative void flag. Stored rather than derived so lists and
+    /// `#Predicate` can filter on it without loading the audit trail.
+    var isVoided: Bool { voidedAt != nil }
+
+    /// A voided document still counts as issued — the donor may be holding it —
+    /// but it must never be presented as current.
+    var isCurrent: Bool {
+        !isVoided && deliveryState != .superseded
+    }
 
     /// "Receipt RCT-2026-0042" — used as the mail subject and the share title.
     var title: String {
@@ -162,21 +183,40 @@ final class GeneratedDocument {
         .lowercased()
     }
 
-    func markSent(channel: String, at date: Date = .now) {
+    // The three delivery transitions each append to the audit trail as part of
+    // the same call. Keeping them paired here rather than at the call sites is
+    // the point: a delivery that happened without a trail entry is a delivery
+    // nobody can prove, and there are eight places in the app that mark a
+    // document sent.
+
+    func markSent(channel: String, at date: Date = .now, actor: String = "") {
         deliveryState = .sent
         deliveryChannel = channel
         sentAt = date
         lastDeliveryError = ""
+        recordAudit(.sent, detail: "via \(channel)", actor: actor, at: date)
     }
 
-    func markQueued() {
+    func markQueued(actor: String = "") {
         deliveryState = .queued
+        recordAudit(
+            .queued,
+            detail: recipientEmail.trimmedOrNil.map { "to \($0)" } ?? "",
+            actor: actor
+        )
     }
 
-    func markFailed(_ error: String) {
+    func markFailed(_ error: String, actor: String = "") {
         deliveryState = .failed
         deliveryAttempts += 1
         lastDeliveryError = error
+        recordAudit(.deliveryFailed, detail: error, actor: actor)
+    }
+
+    func markPrinted(actor: String = "") {
+        // Printing is not a delivery state — the document may also be emailed —
+        // so only the trail records it.
+        recordAudit(.printed, actor: actor)
     }
 }
 

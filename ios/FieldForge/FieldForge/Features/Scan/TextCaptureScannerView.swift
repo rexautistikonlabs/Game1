@@ -22,9 +22,11 @@ import VisionKit
 
 struct TextCaptureScannerView: View {
 
-    enum Mode {
+    enum Mode: String, Identifiable {
         case sign
         case businessCard
+
+        var id: String { rawValue }
 
         var title: String {
             switch self {
@@ -49,7 +51,10 @@ struct TextCaptureScannerView: View {
     }
 
     let mode: Mode
-    let onCapture: (ParsedContactCandidate) -> Void
+    /// Hands back the parsed fields and, when it could be grabbed, the frame
+    /// they were read from. A photo of the storefront outlives the OCR guess it
+    /// produced, so it is worth keeping even when the parse was perfect.
+    let onCapture: (ParsedContactCandidate, Data?) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -58,6 +63,9 @@ struct TextCaptureScannerView: View {
     @State private var errorMessage: String?
     @State private var pickedItem: PhotosPickerItem?
     @State private var cameraDenied = false
+    /// Set by the live scanner so `finish` can grab a still on confirm.
+    @State private var frameProvider: (() async -> Data?)?
+    @State private var capturedFrame: Data?
 
     /// `DataScanner` needs a device with the Neural Engine and camera
     /// permission; `isAvailable` covers the permission half.
@@ -73,6 +81,9 @@ struct TextCaptureScannerView: View {
                         recognizesMultipleItems: true,
                         onRecognize: { blocks in
                             liveBlocks = blocks
+                        },
+                        onReady: { provider in
+                            frameProvider = provider
                         }
                     )
                     .ignoresSafeArea()
@@ -139,7 +150,7 @@ struct TextCaptureScannerView: View {
                 isLoading: isProcessing,
                 isEnabled: !liveBlocks.isEmpty
             ) {
-                finish(with: liveBlocks)
+                Task { await confirm(blocks: liveBlocks) }
             }
         }
         .padding(Space.md)
@@ -195,19 +206,29 @@ struct TextCaptureScannerView: View {
                 errorMessage = "No text found in that photo. Try one taken closer in."
                 return
             }
-            finish(with: blocks)
+            finish(with: blocks, frame: image.jpegData(compressionQuality: 0.7))
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func finish(with blocks: [RecognizedTextBlock]) {
+    /// Grabs a still, then hands everything back. The still is best-effort: a
+    /// failed capture must never cost the staffer the parse.
+    private func confirm(blocks: [RecognizedTextBlock]) async {
+        guard !blocks.isEmpty else { return }
+        isProcessing = true
+        let frame = capturedFrame ?? (await frameProvider?())
+        isProcessing = false
+        finish(with: blocks, frame: frame)
+    }
+
+    private func finish(with blocks: [RecognizedTextBlock], frame: Data?) {
         guard !blocks.isEmpty else { return }
         let candidate = mode == .sign
             ? ContactParser.parseSign(blocks)
             : ContactParser.parseBusinessCard(blocks)
         Haptics.success()
-        onCapture(candidate)
+        onCapture(candidate, frame)
         dismiss()
     }
 }
@@ -224,6 +245,9 @@ struct LiveTextScanner: UIViewControllerRepresentable {
 
     var recognizesMultipleItems: Bool = true
     var onRecognize: ([RecognizedTextBlock]) -> Void
+    /// Called once the scanner exists, handing back a closure that grabs a
+    /// still frame. Keeps `DataScannerViewController` out of the SwiftUI view.
+    var onReady: ((@escaping () async -> Data?) -> Void)?
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
         let scanner = DataScannerViewController(
@@ -236,6 +260,13 @@ struct LiveTextScanner: UIViewControllerRepresentable {
             isHighlightingEnabled: true
         )
         scanner.delegate = context.coordinator
+        onReady?({ @MainActor in
+            // `capturePhoto()` returns the current viewfinder frame at full
+            // resolution. JPEG at 0.7 keeps a storefront photo well under a
+            // megabyte, which matters when it syncs.
+            guard let image = try? await scanner.capturePhoto() else { return nil }
+            return image.jpegData(compressionQuality: 0.7)
+        })
         return scanner
     }
 

@@ -106,7 +106,10 @@ struct ReceiptRenderer {
     /// want presence, a quiet rule for brands that do not. Both read as an
     /// office; neither reads as a template.
     private func drawLetterhead(_ canvas: PDFCanvas) {
-        if content.usesColorBandLetterhead {
+        // A receipt only needs two treatments: a band, or a quiet rule. `split`
+        // and `minimal` both collapse to the quiet variant, which is what they
+        // look like at receipt scale anyway.
+        if content.letterheadStyle == .colorBand {
             let bandHeight: CGFloat = 92
             let band = CGRect(x: 0, y: 0, width: canvas.pageSize.width, height: bandHeight)
             canvas.fill(rect: band, color: content.brandColor)

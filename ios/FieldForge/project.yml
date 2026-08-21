@@ -70,6 +70,7 @@ targets:
       - sdk: CoreLocation.framework
       - sdk: UserNotifications.framework
       - sdk: AVFoundation.framework
+      - sdk: CloudKit.framework
       - sdk: ProximityReader.framework
         weak: true
 

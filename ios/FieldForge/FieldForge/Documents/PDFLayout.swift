@@ -95,6 +95,26 @@ struct TextStyle {
         UIFont.systemFont(ofSize: size, weight: weight)
     }
 
+    static func rounded(_ size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
+        let base = UIFont.systemFont(ofSize: size, weight: weight)
+        guard let descriptor = base.fontDescriptor.withDesign(.rounded) else { return base }
+        return UIFont(descriptor: descriptor, size: size)
+    }
+
+    /// The body font for a document, from the organization's chosen design.
+    ///
+    /// Falls back to the system font whenever a design is unavailable, which is
+    /// the behaviour that matters: a font that cannot be resolved must degrade
+    /// to something readable, never to a blank page in front of a donor.
+    static func body(_ typeface: DocumentTypeface, size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
+        switch typeface {
+        case .serif: return serif(size, weight: weight)
+        case .sans: return sans(size, weight: weight)
+        case .rounded: return rounded(size, weight: weight)
+        case .monospaced: return UIFont.monospacedSystemFont(ofSize: size, weight: weight)
+        }
+    }
+
     /// Tabular figures, so a column of amounts lines up on the decimal point.
     static func monospacedDigits(_ size: CGFloat, weight: UIFont.Weight = .regular) -> UIFont {
         UIFont.monospacedDigitSystemFont(ofSize: size, weight: weight)
@@ -449,6 +469,80 @@ final class PDFCanvas {
     /// Draws an image at an exact rect without touching the cursor.
     func drawImage(_ image: UIImage, in rect: CGRect) {
         image.draw(in: rect)
+    }
+
+    /// A grid of images with captions, used for in-kind item photos.
+    ///
+    /// Aspect-fills each cell and clips, so a mix of portrait and landscape
+    /// photographs still lines up. Page-breaks row by row rather than mid-row,
+    /// because a row of images split across a page break looks like a fault.
+    ///
+    /// - Returns: the number of images actually drawn.
+    @discardableResult
+    func drawImageGrid(
+        _ images: [(image: UIImage, caption: String)],
+        columns: Int = 2,
+        cellHeight: CGFloat = 118,
+        gutter: CGFloat = 10,
+        captionStyle: TextStyle,
+        spacingAfter: CGFloat = 0
+    ) -> Int {
+        guard !images.isEmpty, columns > 0 else { return 0 }
+        if pageIndex < 0 { beginPage() }
+
+        let cellWidth = (contentWidth - gutter * CGFloat(columns - 1)) / CGFloat(columns)
+        let captionHeight: CGFloat = 22
+        let rowHeight = cellHeight + captionHeight
+
+        var drawn = 0
+        for rowStart in stride(from: 0, to: images.count, by: columns) {
+            // Keep a row whole.
+            if rowHeight + gutter > remainingHeight, !isAtTopOfPage {
+                beginPage()
+            }
+            let row = Array(images[rowStart..<min(rowStart + columns, images.count)])
+
+            for (column, entry) in row.enumerated() {
+                let x = contentRect.minX + CGFloat(column) * (cellWidth + gutter)
+                let frame = CGRect(x: x, y: cursorY, width: cellWidth, height: cellHeight)
+
+                // Aspect-fill inside a clip, so no photograph is distorted and
+                // no cell is left with white gaps.
+                cgContext.saveGState()
+                let clip = UIBezierPath(roundedRect: frame, cornerRadius: 4)
+                cgContext.addPath(clip.cgPath)
+                cgContext.clip()
+
+                let imageSize = entry.image.size
+                let scale = max(frame.width / max(imageSize.width, 1), frame.height / max(imageSize.height, 1))
+                let drawnSize = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+                let origin = CGPoint(
+                    x: frame.midX - drawnSize.width / 2,
+                    y: frame.midY - drawnSize.height / 2
+                )
+                entry.image.draw(in: CGRect(origin: origin, size: drawnSize))
+                cgContext.restoreGState()
+
+                stroke(
+                    rect: frame,
+                    color: UIColor(white: 0.8, alpha: 1),
+                    thickness: 0.5,
+                    cornerRadius: 4
+                )
+
+                if let caption = entry.caption.trimmedOrNil {
+                    drawLine(
+                        captionStyle.attributed(caption),
+                        in: CGRect(x: x, y: frame.maxY + 3, width: cellWidth, height: captionHeight - 3)
+                    )
+                }
+                drawn += 1
+            }
+            cursorY += rowHeight + gutter
+        }
+
+        cursorY += spacingAfter
+        return drawn
     }
 
     // MARK: Two-column and table helpers

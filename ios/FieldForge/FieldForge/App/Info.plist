@@ -55,6 +55,10 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>FieldForge can lock donor records behind Face ID so a borrowed or lost iPhone does not expose them.</string>
 
+	<!-- Required for a CKShare invitation link to open the app rather than
+	     bouncing to Safari. Without it, accepting a team invite silently fails. -->
+	<key>CKSharingSupported</key>
+	<true/>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIViewControllerBasedStatusBarAppearance</key>

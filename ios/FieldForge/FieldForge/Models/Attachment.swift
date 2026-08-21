@@ -82,6 +82,17 @@ final class Attachment {
         Money(minorUnits: donorEstimatedValueMinorUnits)
     }
 
+    /// Caption for a document, including the donor's stated value when there is
+    /// one — always labelled as theirs, never as the charity's.
+    var captionForDocument: String {
+        var parts: [String] = []
+        if let caption = caption.trimmedOrNil { parts.append(caption) }
+        if donorEstimatedValueMinorUnits > 0 {
+            parts.append("donor's estimate \(donorEstimatedValue.formatted)")
+        }
+        return parts.joined(separator: " — ")
+    }
+
     var formattedSize: String {
         Int64(byteCount).formatted(.byteCount(style: .file))
     }

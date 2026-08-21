@@ -63,9 +63,18 @@ struct DraftCommitter {
         // 1. Contact — found or created.
         let contact = try resolveContact(draft: draft)
 
-        // 2. Visit — always. Even a declined door is worth a record.
-        let visit = makeVisit(draft: draft, contact: contact)
-        context.insert(visit)
+        // 2. Visit — reuse the one a one-shot scan already committed, or make
+        //    one. Always exactly one: even a declined door is worth a record,
+        //    and a doorstep must never be counted twice.
+        let visit: Visit
+        if let existing = draft.committedVisitID.flatMap(findVisit) {
+            updateVisit(existing, from: draft)
+            visit = existing
+        } else {
+            let fresh = makeVisit(draft: draft, contact: contact)
+            context.insert(fresh)
+            visit = fresh
+        }
 
         // 3. Gift — only when there is actually something given.
         var gift: Gift?
@@ -189,6 +198,29 @@ struct DraftCommitter {
         visit.isSharedWithTeam = entitlements.isSharingActive
         visit.isVerifiedCheckIn = draft.latitude != nil && !draft.attachmentIDs.isEmpty
         return visit
+    }
+
+    private func findVisit(_ id: UUID) -> Visit? {
+        var descriptor = FetchDescriptor<Visit>(predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
+        return (try? context.fetch(descriptor))?.first
+    }
+
+    /// Folds the draft's later answers onto a visit that already exists.
+    ///
+    /// Only the fields the flow actually collects afterwards: the outcome, the
+    /// warmth reading and the notes. The location and the timestamp are left
+    /// alone, because they are facts about the moment of the scan and not
+    /// something a later screen gets to revise.
+    private func updateVisit(_ visit: Visit, from draft: DocumentDraft) {
+        visit.outcome = draft.isVisitOnly ? nonGivingOutcome(draft) : draft.outcome
+        if draft.warmth != .unrated { visit.warmth = draft.warmth }
+        if let notes = draft.visitNotes.trimmedOrNil {
+            visit.notes = notes
+            visit.notesWereDictated = draft.visitNotesWereDictated
+        }
+        visit.isSharedWithTeam = entitlements.isSharingActive
+        visit.touch()
     }
 
     /// A visit with no gift should not be recorded as "gave today" just because

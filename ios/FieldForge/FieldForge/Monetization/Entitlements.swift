@@ -73,6 +73,11 @@ enum Feature: String, CaseIterable {
     /// Tap to Pay on iPhone, which requires an org-level payment platform
     /// relationship anyway.
     case tapToPay
+    /// Route mode: today's follow-ups ordered by walking distance.
+    case routeMode
+    /// Searching and listing document history beyond the free window. The
+    /// documents themselves are never touched — see `historyWindowMonths`.
+    case unlimitedHistory
 
     var isFree: Bool {
         switch self {
@@ -81,7 +86,8 @@ enum Feature: String, CaseIterable {
              .documentDelivery:
             return true
         case .sharedTeamMemory, .multipleOrganizations, .advancedBranding,
-             .bulkExport, .assignFollowUps, .tapToPay:
+             .bulkExport, .assignFollowUps, .tapToPay, .routeMode,
+             .unlimitedHistory:
             return false
         }
     }
@@ -101,6 +107,10 @@ enum Feature: String, CaseIterable {
             return "Hand a follow-up to whoever is walking that street tomorrow."
         case .tapToPay:
             return "Accept a tap of a physical card on the iPhone itself."
+        case .routeMode:
+            return "Today's follow-ups put in walking order, so a morning of visits is a route instead of a zigzag."
+        case .unlimitedHistory:
+            return "Search and browse every document you have ever issued, however far back."
         default:
             return nil
         }
@@ -180,6 +190,28 @@ final class Entitlements {
     /// Document numbers carry a device tag only when several people might be
     /// minting numbers at once.
     var needsDeviceTaggedDocumentNumbers: Bool { isSharingActive }
+
+    /// How far back the Documents list and its search reach on this tier.
+    ///
+    /// Eighteen months, not three. That is deliberate and it is the difference
+    /// between a limit and a hostage: eighteen months covers the whole of last
+    /// tax year plus the current one, which is the window a donor actually calls
+    /// about. A nonprofit that never pays can still answer every realistic
+    /// "can you resend my receipt from April?".
+    ///
+    /// **Nothing is ever deleted.** This caps what the list *shows*, and the
+    /// Documents screen says so with a row that names the count it is hiding.
+    /// A subscription lapsing must never make a donor's tax record unreachable —
+    /// it simply goes back behind the window it came from.
+    var historyWindowMonths: Int? {
+        isEnabled(.unlimitedHistory) ? nil : 18
+    }
+
+    /// The cutoff date for the history window, or `nil` when unlimited.
+    var historyCutoff: Date? {
+        guard let months = historyWindowMonths else { return nil }
+        return Calendar.current.date(byAdding: .month, value: -months, to: .now)
+    }
 
     // MARK: Updating
 

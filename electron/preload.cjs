@@ -6,6 +6,8 @@ const MENU_CHANNELS = [
   'menu:new-invoice',
   'menu:new-receipt',
   'menu:import-scan',
+  'menu:palette',
+  'menu:shortcuts',
   'menu:backup',
   'menu:print',
 ]

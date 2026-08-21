@@ -6,7 +6,7 @@ interface SimpleBooksBridge {
     defaultName: string,
     data: Uint8Array,
     filters?: { name: string; extensions: string[] }[],
-  ) => Promise<{ saved: boolean; path?: string }>
+  ) => Promise<{ saved: boolean; path?: string; error?: string }>
   onMenu: (channel: string, handler: () => void) => () => void
 }
 
@@ -44,6 +44,9 @@ export async function saveFile(
       bytes,
       filter ? [filter] : undefined,
     )
+    // A cancelled dialog is not an error; a failed write is, and the caller's
+    // catch should see it rather than a silent "nothing happened".
+    if (!result.saved && result.error) throw new Error(result.error)
     return result.saved
   }
 

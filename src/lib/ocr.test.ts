@@ -143,3 +143,101 @@ describe('guessCategory', () => {
     expect(guessCategory('QRZ 4471 XV')).toBe('Other')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Regression tests from the code-review pass. Each of these was a real bug.
+// ---------------------------------------------------------------------------
+
+describe('amount parsing regressions', () => {
+  it('does not truncate a four-figure amount printed without a separator', () => {
+    // `\d{1,3}(?:[.,\s]\d{3})*` matched only "200" out of "2000.00".
+    expect(extractTotal('SHOP\nTOTAL 2000.00')).toBe(2000)
+    expect(extractTotal('SHOP\nTOTAL 1995.50')).toBe(1995.5)
+    expect(extractTotal('SHOP\nTOTAL 12500.75')).toBe(12500.75)
+  })
+
+  it('still reads separated amounts in both conventions', () => {
+    expect(extractTotal('SHOP\nAMOUNT DUE 1,590.60')).toBe(1590.6)
+    expect(extractTotal('Laden\nGesamt 1.234,56')).toBe(1234.56)
+  })
+
+  it('does not mistake a four-digit total for a year', () => {
+    // The bare-year strip used \b, which matched inside "2000.00".
+    expect(extractTotal('SHOP\nTOTAL 2026.00')).toBe(2026)
+    expect(extractTotal('SHOP\n2026-04-02\nTOTAL 1980.00')).toBe(1980)
+  })
+
+  it('still ignores a standalone year with no total keyword', () => {
+    expect(extractTotal('CORNER STORE\n2026-04-02\nSnacks 6.25')).toBe(6.25)
+  })
+})
+
+describe('total keyword handling', () => {
+  it('treats "total incl. VAT" as the total, not a tax line', () => {
+    expect(extractTotal('SHOP\nSubtotal 37.50\nTotal incl. VAT 40.80')).toBe(40.8)
+    expect(extractTotal('SHOP\nTotal including tax  117.69')).toBe(117.69)
+    expect(extractTotal('SHOP\nTotal (inc VAT) 90.00')).toBe(90)
+  })
+
+  it('still refuses a subtotal or a bare tax line', () => {
+    expect(extractTotal('SHOP\nSubtotal 80.00\nTax 8.00\nTotal 88.00')).toBe(88)
+  })
+})
+
+describe('identifier lines in the fallback', () => {
+  it('ignores a phone number when no total keyword exists', () => {
+    expect(extractTotal('CORNER STORE\nTEL (206) 555-0733\nSnacks 6.25')).toBe(6.25)
+  })
+
+  it('ignores a VAT registration number', () => {
+    expect(extractTotal('SHOP LTD\nVAT No. GB123456789\nGoods 12.00')).toBe(12)
+  })
+
+  it('does not discard a line that merely mentions tax', () => {
+    expect(extractTotal('SHOP\nPrices include tax\nBread 4.20')).toBe(4.2)
+  })
+})
+
+describe('vendor capitalisation', () => {
+  it('leaves short acronyms alone', () => {
+    expect(extractVendor('IBM UK LTD\n2026-01-01\nTotal 10.00')).toBe('IBM UK LTD')
+    expect(extractVendor('BP CONNECT\n2026-01-01\nTotal 40.00')).toBe('BP Connect')
+  })
+
+  it('does not capitalise the letter after an apostrophe', () => {
+    expect(extractVendor("MCDONALD'S RESTAURANT\n2026-01-01\nTotal 8.00")).toBe(
+      "Mcdonald's Restaurant",
+    )
+  })
+
+  it('does not treat a short function word as an acronym', () => {
+    expect(extractVendor('HARBOR AND FINCH COFFEE\n2026-01-01\nTotal 8.00')).toBe(
+      'Harbor And Finch Coffee',
+    )
+  })
+
+  it('leaves a name that is already mixed case untouched', () => {
+    expect(extractVendor('Bürobedarf Schmidt GmbH\n25.02.2026')).toBe('Bürobedarf Schmidt GmbH')
+  })
+})
+
+describe('guessCategory against a company list', () => {
+  it('only returns a category the company actually has', () => {
+    const available = ['Office Supplies', 'Other']
+    // "Travel" is the natural guess, but this company has no Travel category.
+    expect(guessCategory('ALASKA AIRLINES', available)).toBe('Other')
+  })
+
+  it('matches case-insensitively against the company list', () => {
+    expect(guessCategory('ALASKA AIRLINES', ['travel', 'other'])).toBe('travel')
+  })
+
+  it('falls back to the first category when there is no Other', () => {
+    expect(guessCategory('QRZ 4471 XV', ['Program Expenses', 'Grants'])).toBe('Program Expenses')
+  })
+
+  it('keeps the built-in behaviour when no list is supplied', () => {
+    expect(guessCategory('ALASKA AIRLINES')).toBe('Travel')
+    expect(guessCategory('QRZ 4471 XV')).toBe('Other')
+  })
+})

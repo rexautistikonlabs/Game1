@@ -34,8 +34,15 @@ export const DocumentSheet = forwardRef<
       className={className}
       style={{
         width: '210mm',
-        minHeight: '297mm',
-        padding: '16mm 14mm',
+        // Deliberately no minHeight: a 297mm-tall element rounds up to a second
+        // page in the generated PDF. SheetPreview supplies the paper backdrop
+        // on screen instead.
+        //
+        // 14mm vertical rather than 16mm: a typical invoice with notes, payment
+        // details and a footer measured 1133px against A4's 1123px, spilling a
+        // 10px sliver onto a second page. This buys ~15px of headroom while
+        // still leaving a comfortable margin.
+        padding: '14mm 14mm',
         background: '#ffffff',
         color: '#15181c',
         boxSizing: 'border-box',

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, Eye, Repeat, Save } from 'lucide-react'
 import { Button } from '../components/ui/Button'
@@ -7,12 +7,14 @@ import { ClientPicker } from '../components/ClientPicker'
 import { DocumentSheet } from '../components/DocumentSheet'
 import { Field, Input, MoneyInput, Select, Textarea } from '../components/ui/Input'
 import { LineItemsEditor } from '../components/LineItemsEditor'
+import { useConfirm } from '../components/ui/Confirm'
 import { Segmented } from '../components/ui/SearchInput'
 import { SheetPreview } from '../components/SheetPreview'
 import { EditorSkeleton } from '../components/ui/Skeleton'
 import { claimNextNumber, db, newId } from '../db/db'
 import { addDays, computeTotals, currencySymbol, formatDate, formatMoney, today } from '../lib/format'
 import { nextOccurrence } from '../lib/recurrence'
+import { setNavGuard } from '../lib/navGuard'
 import { useApp } from '../store/useApp'
 import { useActiveCompany, useClients, useDocument } from '../store/useCompanyData'
 import {
@@ -70,6 +72,10 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
 
   const [draft, setDraft] = useState<Document | null>(null)
   const [saveClient, setSaveClient] = useState(false)
+  const { confirm, dialog } = useConfirm()
+  // A snapshot of the draft as first loaded, to tell edited from untouched.
+  const pristineRef = useRef<string | null>(null)
+  const savedRef = useRef(false)
   const [errors, setErrors] = useState<{ client?: string; items?: string }>({})
   const [saving, setSaving] = useState(false)
   const [showPreview, setShowPreview] = useState(false)
@@ -88,7 +94,9 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
         navigate('/invoices', { replace: true })
         return
       }
-      setDraft(structuredClone(existing))
+      const loaded = structuredClone(existing)
+      pristineRef.current = JSON.stringify(loaded)
+      setDraft(loaded)
       return
     }
 
@@ -100,7 +108,7 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
           return
         }
         const now = new Date().toISOString()
-        setDraft({
+        const copied: Document = {
           ...structuredClone(source),
           id: newId(),
           number: '',
@@ -112,19 +120,21 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
           items: source.items.map((item) => ({ ...item, id: newId() })),
           createdAt: now,
           updatedAt: now,
-        })
+        }
+        pristineRef.current = JSON.stringify(copied)
+        setDraft(copied)
       })
       return
     }
 
     const fresh = draftDocument(newKind ?? 'invoice', company)
+    pristineRef.current = JSON.stringify(fresh)
 
     // Arriving from a client card (?client=…) should pre-fill who this is for.
     const clientId = searchParams.get('client')
     if (clientId) {
       void db.clients.get(clientId).then((client) => {
-        setDraft(
-          client
+        const seeded: Document = client
             ? {
                 ...fresh,
                 clientId: client.id,
@@ -135,8 +145,9 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
                   addressLines: client.addressLines,
                 },
               }
-            : fresh,
-        )
+            : fresh
+        pristineRef.current = JSON.stringify(seeded)
+        setDraft(seeded)
       })
       return
     }
@@ -148,6 +159,42 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
     () => (draft ? computeTotals(draft) : { subtotal: 0, discount: 0, taxableBase: 0, tax: 0, total: 0 }),
     [draft],
   )
+
+  // Unsaved work only exists in component state, so leaving the page loses it.
+  const isDirty =
+    draft !== null &&
+    !savedRef.current &&
+    pristineRef.current !== null &&
+    JSON.stringify(draft) !== pristineRef.current
+
+  const confirmDiscard = useCallback(async () => {
+    if (!isDirty) return true
+    return await confirm({
+      title: 'Discard your changes?',
+      message: 'This document has edits that have not been saved. Leaving now loses them.',
+      confirmLabel: 'Discard changes',
+      cancelLabel: 'Keep editing',
+      destructive: true,
+    })
+  }, [isDirty, confirm])
+
+  // Anything in the app shell that navigates asks this first.
+  useEffect(() => {
+    setNavGuard(confirmDiscard)
+    return () => setNavGuard(null)
+  }, [confirmDiscard])
+
+  // And the browser or Electron asks before a reload, a close, or a quit.
+  useEffect(() => {
+    if (!isDirty) return
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      // Required by older browsers to actually show the prompt.
+      event.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [isDirty])
 
   if (!company || !clients || !draft) return <EditorSkeleton />
 
@@ -242,6 +289,9 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
       }
 
       await db.documents.put(record)
+      // Mark clean before navigating, so the guard does not challenge a save.
+      savedRef.current = true
+      setNavGuard(null)
       toast(`${isInvoice ? 'Invoice' : 'Receipt'} ${number} saved`)
       navigate(`/documents/${record.id}`, { replace: true })
     } catch (error) {
@@ -262,7 +312,13 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
     <div>
       {/* ---- Sticky action bar ---- */}
       <div className="mb-6 flex flex-wrap items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={() => navigate(-1)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={async () => {
+            if (await confirmDiscard()) navigate(-1)
+          }}
+        >
           <ArrowLeft className="h-4 w-4" aria-hidden />
           Back
         </Button>
@@ -515,6 +571,8 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
           </div>
         </div>
       </div>
+
+      {dialog}
     </div>
   )
 }

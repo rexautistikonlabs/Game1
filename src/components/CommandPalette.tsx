@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -20,6 +20,7 @@ import {
 import { CompanyAvatar } from './CompanySwitcher'
 import { cn } from '../lib/cn'
 import { computeTotals, formatDate, formatMoney } from '../lib/format'
+import { confirmNavigation } from '../lib/navGuard'
 import { useApp } from '../store/useApp'
 import {
   useClients,
@@ -235,6 +236,21 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       .slice(0, 40)
   }, [commands, query])
 
+  /**
+   * Closes the palette and runs the command — after checking with any active
+   * navigation guard, so picking "New invoice" cannot discard an unsaved one.
+   */
+  const runCommand = useCallback(
+    async (command: Command) => {
+      // Close first: the palette is a launcher, and leaving it open behind the
+      // "discard changes?" dialog traps the pointer under an invisible overlay.
+      onClose()
+      if (!(await confirmNavigation())) return
+      await command.run()
+    },
+    [onClose],
+  )
+
   // Keep the highlight inside the list as it shrinks while you type.
   useEffect(() => setSelected(0), [query])
 
@@ -272,8 +288,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           claim()
           const command = results[selected]
           if (!command) return
-          onClose()
-          void command.run()
+          void runCommand(command)
           return
         }
         default:
@@ -283,7 +298,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     // Capture phase, so these beat the app-wide shortcut handler on `document`.
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [open, results, selected, onClose])
+  }, [open, results, selected, onClose, runCommand])
 
   // Scroll the highlighted row into view when moving by keyboard.
   useEffect(() => {
@@ -353,10 +368,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
                     aria-selected={isSelected}
                     data-selected={isSelected}
                     onMouseMove={() => setSelected(index)}
-                    onClick={() => {
-                      onClose()
-                      void command.run()
-                    }}
+                    onClick={() => void runCommand(command)}
                     className={cn(
                       'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition',
                       isSelected ? 'bg-black/[0.055] dark:bg-white/[0.09]' : '',

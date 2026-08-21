@@ -12,22 +12,29 @@ export function printDocument(): void {
 }
 
 /**
- * Renders the on-screen document sheet to a real PDF file via html2pdf.
- * Loaded lazily — html2canvas + jsPDF are large and most sessions never
- * touch them.
+ * Renders the document sheet to a real PDF via html2pdf. Loaded lazily —
+ * html2canvas + jsPDF are large and most sessions never touch them.
+ *
+ * The sheet deliberately has no fixed A4 height (see DocumentSheet): capturing
+ * a 297mm-tall element rounds up to a second page, so every short invoice used
+ * to come out as a two-page PDF with a blank page 2. The paper look on screen
+ * comes from SheetPreview instead.
  */
 export async function generatePdfBlob(element: HTMLElement): Promise<Blob> {
   const { default: html2pdf } = await import('html2pdf.js')
-  return html2pdf()
+
+  return (await html2pdf()
     .set({
       margin: 0,
       filename: 'document.pdf',
       image: { type: 'jpeg', quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false },
       jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      // Never slice a line-item row or the totals block down the middle.
+      pagebreak: { mode: ['css', 'legacy'], avoid: ['tr', '.avoid-break'] },
     })
     .from(element)
-    .outputPdf('blob') as Promise<Blob>
+    .outputPdf('blob')) as Blob
 }
 
 export const pdfFilename = (doc: Document): string =>

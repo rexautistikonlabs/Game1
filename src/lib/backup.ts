@@ -1,4 +1,4 @@
-import { db } from '../db/db'
+import { db, seedCategories } from '../db/db'
 import type { Attachment, Category, Client, Company, Document, Expense, Setting } from '../types'
 
 export interface BackupFile {
@@ -101,6 +101,13 @@ export async function restoreBackup(
       if (mode === 'replace') await db.settings.bulkPut(backup.settings ?? [])
     },
   )
+
+  // A backup taken before categories existed restores companies with no list —
+  // the Dexie upgrade only fires on a schema change, not on a restore. Give any
+  // company that arrived without categories the defaults.
+  for (const company of backup.companies ?? []) {
+    await seedCategories(company.id)
+  }
 
   return {
     companies: backup.companies?.length ?? 0,

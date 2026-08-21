@@ -17,6 +17,7 @@ import { CompanySwitcher } from './CompanySwitcher'
 import { Button } from './ui/Button'
 import { useApp } from '../store/useApp'
 import { cn } from '../lib/cn'
+import { confirmNavigation } from '../lib/navGuard'
 import { shortcutLabel } from '../lib/shortcuts'
 
 const NAV_ITEMS = [
@@ -33,6 +34,11 @@ export function TopBar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const navigate = useNavigate()
   const theme = useApp((s) => s.theme)
   const setTheme = useApp((s) => s.setTheme)
+
+  // Never discard an unsaved document just because a nav control was clicked.
+  const go = async (to: string) => {
+    if (await confirmNavigation()) navigate(to)
+  }
 
   return (
     <header
@@ -71,13 +77,13 @@ export function TopBar({ onOpenPalette }: { onOpenPalette: () => void }) {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate('/expenses?import=1')}
+            onClick={() => void go('/expenses?import=1')}
             className="hidden lg:inline-flex"
           >
             <ScanLine className="h-4 w-4" aria-hidden />
             Import scan
           </Button>
-          <Button variant="brand" size="sm" onClick={() => navigate('/invoices/new')}>
+          <Button variant="brand" size="sm" onClick={() => void go('/invoices/new')}>
             <Plus className="h-4 w-4" aria-hidden />
             <span className="hidden sm:inline">New invoice</span>
             <span className="sm:hidden">New</span>

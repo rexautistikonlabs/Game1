@@ -188,7 +188,17 @@ function parseAmount(raw: string): number | null {
   return Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null
 }
 
-const AMOUNT_PATTERN = /(?:[$€£¥₹]\s*)?-?\d{1,3}(?:[.,\s]\d{3})*(?:[.,]\d{1,2})?|(?:[$€£¥₹]\s*)?-?\d+(?:[.,]\d{1,2})?/g
+/**
+ * Matches a money-shaped token.
+ *
+ * The grouped form (1,234.56 / 1.234,56) is tried first, then the plain form.
+ * Order matters, and so does allowing the plain form an unbounded integer part:
+ * an earlier version led with `\d{1,3}(?:[.,\s]\d{3})*`, which matched only
+ * "200" out of "2000.00" — silently truncating every four-figure total that was
+ * printed without a thousands separator.
+ */
+const AMOUNT_PATTERN =
+  /(?:[$€£¥₹]\s*)?-?(?:\d{1,3}(?:[.,\s]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)/g
 
 function amountsInLine(line: string): number[] {
   const found: number[] = []
@@ -205,17 +215,38 @@ const stripRates = (line: string): string => line.replace(/\d+(?:[.,]\d+)?\s*%/g
 /**
  * Drops date-like tokens. Without this, "25.02.2026" contributes a stray
  * "2026" that can outweigh the real total on a receipt with no total keyword.
+ *
+ * The bare-year pass requires that the year is not touching a digit or a
+ * decimal separator on either side. An earlier version used `\b`, which
+ * happily matched the "2000" inside "2000.00" and turned a $2,000 total into
+ * zero — every total between 1900 and 2099 was corrupted.
  */
 const stripDates = (line: string): string =>
   line
     .replace(/\b\d{1,4}[-/.]\d{1,2}[-/.]\d{2,4}\b/g, ' ')
-    .replace(/\b(19|20)\d{2}\b/g, ' ')
+    .replace(/(?<![\d.,])(?:19|20)\d{2}(?![\d.,])/g, ' ')
+
+/**
+ * Lines that carry an identifier rather than money: phone numbers, VAT and
+ * registration numbers, card and terminal numbers. Only consulted when no total
+ * keyword was found anywhere, where the largest number on the receipt would
+ * otherwise win — and "TEL (206) 555-0733" offers a very large number.
+ */
+const IDENTIFIER_LINE =
+  /\b(?:tel|telephone|phone|fax|mobile|cell)\b|\b(?:vat|gst|abn|ein|tax|reg|registration|account|acct|iban|swift|card|terminal|auth|approval|ref|reference|order|invoice|barcode|serial|customer)\s*(?:no\.?|number|id|#|:)/i
+
+/** Long digit runs are identifiers, never amounts. */
+const stripLongDigitRuns = (line: string): string =>
+  line.replace(/(?<!\d)\d{7,}(?!\d)/g, ' ')
 
 const TOTAL_KEYWORDS = [
   /\bgrand\s*total\b/i,
   /\bamount\s*(?:due|paid|charged)\b/i,
   /\btotal\s*(?:due|amount|paid|sale)\b/i,
   /\bbalance\s*due\b/i,
+  // "Total incl. VAT" / "Total including tax" — a total, even though it names a
+  // tax. Matched above the bare `total` rule so it skips the negative filter.
+  /\btotal\b[^\n]{0,24}\b(?:incl|including|inc)\b/i,
   /\btotal\b/i,
   /\bto\s*pay\b/i,
   // Common non-English wording, so a European receipt is not left to the
@@ -233,19 +264,24 @@ export function extractTotal(text: string): number {
     const matches: number[] = []
     for (const line of lines) {
       if (!keyword.test(line)) continue
-      // "TOTAL" also appears inside "SUBTOTAL" — skip those unless we are
-      // matching a very specific phrase like "grand total".
-      if (priority >= 4 && NEGATIVE_TOTAL_KEYWORDS.test(line)) continue
-      const amounts = amountsInLine(stripDates(stripRates(line)))
+      // The bare `total` rule (index 5) and below are loose enough to match a
+      // subtotal or a tax line, so those get filtered. The specific phrases
+      // above it do not need it.
+      if (priority >= 5 && NEGATIVE_TOTAL_KEYWORDS.test(line)) continue
+      // A zero here means the line's only number was stripped as a date or a
+      // rate, not that the receipt is free. Ignore it and keep looking.
+      const amounts = amountsInLine(stripDates(stripRates(line))).filter((n) => n > 0)
       if (amounts.length) matches.push(Math.max(...amounts))
     }
     // Later "TOTAL" lines win: a receipt's grand total sits below its subtotal.
     if (matches.length) return matches.at(-1)!
   }
 
-  // No keyword anywhere — fall back to the largest amount on the receipt.
+  // No keyword anywhere — fall back to the largest amount on the receipt, after
+  // discarding the lines that hold identifiers rather than money.
   const all = lines
-    .flatMap((line) => amountsInLine(stripDates(stripRates(line))))
+    .filter((line) => !IDENTIFIER_LINE.test(line))
+    .flatMap((line) => amountsInLine(stripLongDigitRuns(stripDates(stripRates(line)))))
     .filter((n) => n > 0)
   return all.length ? Math.max(...all) : 0
 }
@@ -300,13 +336,37 @@ export function extractVendor(text: string): string {
   return ''
 }
 
+/** Short words that are words, not acronyms, when a header is shouting. */
+const SHORT_WORDS = new Set([
+  'a', 'an', 'and', 'at', 'by', 'de', 'for', 'in', 'la', 'le', 'of', 'on', 'or',
+  'the', 'to', 'und', 'via',
+])
+
+/**
+ * Receipt headers are usually printed in capitals, which reads badly in a
+ * ledger. Title-casing them is an improvement — but naively lowercasing first
+ * turned "IBM UK LTD" into "Ibm Uk LTD" and "MCDONALD'S" into "Mcdonald'S".
+ * So: short all-caps words are treated as acronyms and left alone, and a letter
+ * following an apostrophe is not treated as the start of a word.
+ */
 function titleCaseIfShouting(text: string): string {
   const isShouting = text === text.toUpperCase() && /[A-Z]{3}/.test(text)
   if (!isShouting) return text
+
   return text
-    .toLowerCase()
-    .replace(/\b([a-z])/g, (_, c: string) => c.toUpperCase())
-    .replace(/\b(Llc|Inc|Ltd|Plc)\b/g, (m) => m.toUpperCase())
+    .split(/(\s+)/)
+    .map((word) => {
+      const letters = word.replace(/[^A-Za-z]/g, '')
+      // "IBM", "UK", "LLC", "BP" — almost certainly an acronym, not a shout.
+      // Short function words are the exception: "AND" is not an acronym.
+      if (letters.length > 0 && letters.length <= 3 && !SHORT_WORDS.has(letters.toLowerCase())) {
+        return word
+      }
+      return word
+        .toLowerCase()
+        .replace(/(?<!['\u2019])\b([a-z])/g, (_, character: string) => character.toUpperCase())
+    })
+    .join('')
 }
 
 const CATEGORY_HINTS: [RegExp, (typeof DEFAULT_EXPENSE_CATEGORIES)[number]][] = [

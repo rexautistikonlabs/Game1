@@ -97,26 +97,49 @@ export async function deleteCompanyCascade(companyId: string): Promise<void> {
   )
 }
 
+/** How many taken numbers to skip past before giving up and using the value. */
+const MAX_NUMBER_PROBES = 10_000
+
 /**
  * Claims the next document number for a company and bumps the counter in the
  * same transaction, so two quick clicks can never produce a duplicate.
+ *
+ * It also skips past any number already in use. The counter is user-editable in
+ * Settings, and restoring a backup can reintroduce documents the counter has
+ * already passed — either way, handing out a number twice would be a
+ * bookkeeping problem, so the claim checks rather than trusting the counter.
  */
 export async function claimNextNumber(
   companyId: string,
   kind: 'invoice' | 'receipt',
 ): Promise<string> {
-  return db.transaction('rw', db.companies, async () => {
+  return db.transaction('rw', [db.companies, db.documents], async () => {
     const company = await db.companies.get(companyId)
     if (!company) throw new Error('Company not found')
 
     const isInvoice = kind === 'invoice'
-    const next = isInvoice ? company.nextInvoiceNumber : company.nextReceiptNumber
     const prefix = isInvoice ? company.invoicePrefix : company.receiptPrefix
 
-    await db.companies.update(companyId,
-      isInvoice ? { nextInvoiceNumber: next + 1 } : { nextReceiptNumber: next + 1 },
+    // Every number this company has already used, so the scan below is one
+    // read rather than one per candidate.
+    const taken = new Set(
+      (await db.documents.where('companyId').equals(companyId).toArray()).map((doc) => doc.number),
     )
-    return `${prefix}${String(next).padStart(4, '0')}`
+
+    let candidate = isInvoice ? company.nextInvoiceNumber : company.nextReceiptNumber
+    let number = `${prefix}${String(candidate).padStart(4, '0')}`
+    let probes = 0
+    while (taken.has(number) && probes < MAX_NUMBER_PROBES) {
+      candidate += 1
+      probes += 1
+      number = `${prefix}${String(candidate).padStart(4, '0')}`
+    }
+
+    await db.companies.update(
+      companyId,
+      isInvoice ? { nextInvoiceNumber: candidate + 1 } : { nextReceiptNumber: candidate + 1 },
+    )
+    return number
   })
 }
 

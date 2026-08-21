@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { CommandPalette } from './components/CommandPalette'
 import { ShortcutsDialog } from './components/ShortcutsDialog'
@@ -16,6 +16,7 @@ import { Welcome } from './pages/Welcome'
 import { useApp } from './store/useApp'
 import { useActiveCompany, useCompanies } from './store/useCompanyData'
 import { onDesktopMenu } from './lib/download'
+import { confirmNavigation } from './lib/navGuard'
 import { catchUpRecurring } from './lib/recurrence'
 import { useShortcuts, type Shortcut } from './lib/shortcuts'
 import { withAlpha, readableOn } from './lib/format'
@@ -34,13 +35,22 @@ function useBrandTheme() {
 }
 
 /** Wires the Electron application menu to in-app navigation. */
-function useDesktopMenu() {
+function useDesktopMenu(handlers: {
+  openPalette: () => void
+  openShortcuts: () => void
+}) {
   const navigate = useNavigate()
+  // Read through a ref so re-created callbacks do not re-bind the listeners.
+  const handlersRef = useRef(handlers)
+  handlersRef.current = handlers
+
   useEffect(() => {
     const unsubscribers = [
       onDesktopMenu('menu:new-invoice', () => navigate('/invoices/new')),
       onDesktopMenu('menu:new-receipt', () => navigate('/receipts/new')),
       onDesktopMenu('menu:import-scan', () => navigate('/expenses?import=1')),
+      onDesktopMenu('menu:palette', () => handlersRef.current.openPalette()),
+      onDesktopMenu('menu:shortcuts', () => handlersRef.current.openShortcuts()),
       onDesktopMenu('menu:backup', () => navigate('/settings?backup=1')),
       onDesktopMenu('menu:print', () => window.print()),
     ]
@@ -51,12 +61,21 @@ function useDesktopMenu() {
 /**
  * The editor renders at several routes, and React would otherwise reuse the
  * same component instance across them — leaving the previous draft in place
- * when you go from "New invoice" straight to "New receipt". Keying on the URL
- * guarantees a fresh draft whenever the route or its query changes.
+ * when you go from "New invoice" straight to "New receipt".
+ *
+ * The key includes `location.key`, which React Router changes on every
+ * navigation, so navigating to the route you are already on also starts fresh.
+ * Keying on the path alone left a half-filled form in place when you pressed
+ * "New invoice" from inside a new invoice.
  */
 function KeyedDocumentEdit({ kind }: { kind?: DocumentKind }) {
   const location = useLocation()
-  return <DocumentEdit key={`${location.pathname}${location.search}`} kind={kind} />
+  return (
+    <DocumentEdit
+      key={`${location.pathname}${location.search}#${location.key}`}
+      kind={kind}
+    />
+  )
 }
 
 export function App() {
@@ -69,19 +88,25 @@ export function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
 
   useBrandTheme()
-  useDesktopMenu()
+  useDesktopMenu({
+    openPalette: () => setPaletteOpen(true),
+    openShortcuts: () => setShortcutsOpen(true),
+  })
 
   // A stable array, so the listener is bound once rather than every render.
-  const shortcuts = useMemo<Shortcut[]>(
-    () => [
+  const shortcuts = useMemo<Shortcut[]>(() => {
+    // A shortcut that navigates must not silently bin an unsaved document.
+    const go = (to: string) => async () => {
+      if (await confirmNavigation()) navigate(to)
+    }
+    return [
       { key: 'k', mod: true, run: () => setPaletteOpen((v) => !v) },
-      { key: 'n', mod: true, run: () => navigate('/invoices/new') },
-      { key: 'n', mod: true, shift: true, run: () => navigate('/receipts/new') },
-      { key: 'i', mod: true, run: () => navigate('/expenses?import=1') },
+      { key: 'n', mod: true, run: go('/invoices/new') },
+      { key: 'n', mod: true, shift: true, run: go('/receipts/new') },
+      { key: 'i', mod: true, run: go('/expenses?import=1') },
       { key: '?', run: () => setShortcutsOpen(true) },
-    ],
-    [navigate],
-  )
+    ]
+  }, [navigate])
   useShortcuts(shortcuts, ready)
 
   useEffect(() => {

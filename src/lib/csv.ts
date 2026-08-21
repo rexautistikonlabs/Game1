@@ -7,10 +7,24 @@ const statusLabel = (doc: Document): string => {
   return status.charAt(0).toUpperCase() + status.slice(1)
 }
 
+/**
+ * A leading =, +, @ or control character makes a spreadsheet treat the cell as
+ * a formula rather than text, which is how a client name becomes code on
+ * someone else's machine. Prefixing with an apostrophe forces text.
+ *
+ * Numbers are left alone, so a negative figure like "-40.00" stays a number.
+ */
+function neutraliseFormula(text: string): string {
+  if (!/^[=+@\t\r]/.test(text)) return text
+  // A value that is genuinely numeric is not a formula risk.
+  if (Number.isFinite(Number(text))) return text
+  return `'${text}`
+}
+
 /** RFC-4180 quoting — Excel and Google Sheets both read this cleanly. */
 function cell(value: unknown): string {
   if (value === null || value === undefined) return ''
-  const text = String(value)
+  const text = neutraliseFormula(String(value))
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 

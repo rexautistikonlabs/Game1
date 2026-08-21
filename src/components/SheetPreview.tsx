@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '../lib/cn'
 
-/** A4 width in CSS pixels at 96 dpi — the sheet's own fixed width. */
+/** A4 in CSS pixels at 96 dpi. Width is the sheet's own; height is the paper
+ *  backdrop this component draws behind a short document. */
 const SHEET_WIDTH = (210 / 25.4) * 96
+const SHEET_HEIGHT = (297 / 25.4) * 96
 
 /**
  * Shows the real, print-sized document sheet scaled down to fit whatever space
@@ -47,6 +49,10 @@ export function SheetPreview({
         ref={contentRef}
         style={{
           width: SHEET_WIDTH,
+          // The document itself is only as tall as its content — this makes a
+          // short invoice still look like a full sheet of paper on screen.
+          minHeight: SHEET_HEIGHT,
+          background: '#ffffff',
           transform: `scale(${scale})`,
           transformOrigin: 'top left',
         }}

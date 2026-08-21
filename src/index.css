@@ -169,7 +169,8 @@
     top: 0 !important;
     width: 210mm !important;
     margin: 0 !important;
-    padding: 16mm 14mm !important;
+    /* Matches DocumentSheet's own padding — see the note there on why 14mm. */
+    padding: 14mm 14mm !important;
     border: 0 !important;
     border-radius: 0 !important;
     box-shadow: none !important;

@@ -1,0 +1,33 @@
+appId: org.simplebooks.app
+productName: SimpleBooks
+copyright: SimpleBooks
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+
+mac:
+  category: public.app-category.finance
+  target:
+    - dmg
+    - zip
+
+win:
+  target:
+    - nsis
+    - portable
+
+linux:
+  category: Office
+  target:
+    - AppImage
+    - deb
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

@@ -1,0 +1,115 @@
+import { useEffect } from 'react'
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { TopBar } from './components/TopBar'
+import { Toaster } from './components/ui/Toaster'
+import { Dashboard } from './pages/Dashboard'
+import { DocumentEdit } from './pages/DocumentEdit'
+import { DocumentView } from './pages/DocumentView'
+import { Documents } from './pages/Documents'
+import { Expenses } from './pages/Expenses'
+import { Clients } from './pages/Clients'
+import { Settings } from './pages/Settings'
+import { Welcome } from './pages/Welcome'
+import { useApp } from './store/useApp'
+import { useActiveCompany, useCompanies } from './store/useCompanyData'
+import { onDesktopMenu } from './lib/download'
+import { withAlpha, readableOn } from './lib/format'
+import type { DocumentKind } from './types'
+
+/** Paints the whole app in the active company's colour. */
+function useBrandTheme() {
+  const company = useActiveCompany()
+  useEffect(() => {
+    const brand = company?.brandColor || '#1d4ed8'
+    const root = document.documentElement
+    root.style.setProperty('--brand', brand)
+    root.style.setProperty('--brand-soft', withAlpha(brand, 0.1))
+    root.style.setProperty('--brand-ink', readableOn(brand))
+  }, [company?.brandColor])
+}
+
+/** Wires the Electron application menu to in-app navigation. */
+function useDesktopMenu() {
+  const navigate = useNavigate()
+  useEffect(() => {
+    const unsubscribers = [
+      onDesktopMenu('menu:new-invoice', () => navigate('/invoices/new')),
+      onDesktopMenu('menu:new-receipt', () => navigate('/receipts/new')),
+      onDesktopMenu('menu:import-scan', () => navigate('/expenses?import=1')),
+      onDesktopMenu('menu:backup', () => navigate('/settings?backup=1')),
+      onDesktopMenu('menu:print', () => window.print()),
+    ]
+    return () => unsubscribers.forEach((off) => off())
+  }, [navigate])
+}
+
+/**
+ * The editor renders at several routes, and React would otherwise reuse the
+ * same component instance across them — leaving the previous draft in place
+ * when you go from "New invoice" straight to "New receipt". Keying on the URL
+ * guarantees a fresh draft whenever the route or its query changes.
+ */
+function KeyedDocumentEdit({ kind }: { kind?: DocumentKind }) {
+  const location = useLocation()
+  return <DocumentEdit key={`${location.pathname}${location.search}`} kind={kind} />
+}
+
+export function App() {
+  const ready = useApp((s) => s.ready)
+  const init = useApp((s) => s.init)
+  const companies = useCompanies()
+
+  useBrandTheme()
+  useDesktopMenu()
+
+  useEffect(() => {
+    void init()
+  }, [init])
+
+  if (!ready || companies === undefined) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div
+            className="h-9 w-9 animate-spin rounded-full border-[3px] border-[color:var(--border)]"
+            style={{ borderTopColor: 'var(--brand)' }}
+            aria-hidden
+          />
+          <p className="text-[14px] text-[color:var(--text-muted)]">Opening your books…</p>
+        </div>
+      </div>
+    )
+  }
+
+  // No companies at all — nothing else in the app would make sense yet.
+  if (companies.length === 0) {
+    return (
+      <>
+        <Welcome />
+        <Toaster />
+      </>
+    )
+  }
+
+  return (
+    <div className="flex min-h-full flex-col">
+      <TopBar />
+      <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-7 sm:px-6">
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/invoices" element={<Documents kind="invoice" />} />
+          <Route path="/receipts" element={<Documents kind="receipt" />} />
+          <Route path="/invoices/new" element={<KeyedDocumentEdit kind="invoice" />} />
+          <Route path="/receipts/new" element={<KeyedDocumentEdit kind="receipt" />} />
+          <Route path="/documents/:id" element={<DocumentView />} />
+          <Route path="/documents/:id/edit" element={<KeyedDocumentEdit />} />
+          <Route path="/expenses" element={<Expenses />} />
+          <Route path="/clients" element={<Clients />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
+      <Toaster />
+    </div>
+  )
+}

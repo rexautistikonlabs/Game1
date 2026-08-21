@@ -9,7 +9,8 @@ import { currencySymbol, today } from '../lib/format'
 import { scanReceipt } from '../lib/ocr'
 import { useApp } from '../store/useApp'
 import { cn } from '../lib/cn'
-import { EXPENSE_CATEGORIES, PAYMENT_METHODS, type Company, type Expense } from '../types'
+import { useCategories } from '../store/useCompanyData'
+import { PAYMENT_METHODS, type Company, type Expense } from '../types'
 
 type Phase = 'drop' | 'reading' | 'review'
 
@@ -43,6 +44,7 @@ export function ScanImportDialog({
   company: Company
 }) {
   const toast = useApp((s) => s.toast)
+  const categories = useCategories()
   const inputRef = useRef<HTMLInputElement>(null)
 
   const [phase, setPhase] = useState<Phase>('drop')
@@ -75,8 +77,10 @@ export function ScanImportDialog({
       setPhase('reading')
       setProgress({ stage: 'Getting ready', percent: 0 })
       try {
-        const result = await scanReceipt(file, (stage, percent) =>
-          setProgress({ stage, percent }),
+        const result = await scanReceipt(
+          file,
+          (stage, percent) => setProgress({ stage, percent }),
+          categories?.map((c) => c.name),
         )
         setImage(result.imageDataUrl)
         setOcrText(result.text)
@@ -101,7 +105,7 @@ export function ScanImportDialog({
         setPhase('drop')
       }
     },
-    [toast],
+    [toast, categories],
   )
 
   const accept = (files: FileList | File[] | null) => {
@@ -313,9 +317,9 @@ export function ScanImportDialog({
                   value={draft.category}
                   onChange={(event) => patch({ category: event.target.value })}
                 >
-                  {EXPENSE_CATEGORIES.map((category) => (
-                    <option key={category} value={category}>
-                      {category}
+                  {(categories ?? []).map((category) => (
+                    <option key={category.id} value={category.name}>
+                      {category.name}
                     </option>
                   ))}
                 </Select>

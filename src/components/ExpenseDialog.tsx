@@ -5,7 +5,8 @@ import { Modal } from './ui/Modal'
 import { db, newId } from '../db/db'
 import { currencySymbol, today } from '../lib/format'
 import { useApp } from '../store/useApp'
-import { EXPENSE_CATEGORIES, PAYMENT_METHODS, type Company, type Expense } from '../types'
+import { useCategories } from '../store/useCompanyData'
+import { PAYMENT_METHODS, type Company, type Expense } from '../types'
 
 /** Add or edit an expense by hand — the path for anything without a scan. */
 export function ExpenseDialog({
@@ -21,6 +22,7 @@ export function ExpenseDialog({
   expense?: Expense
 }) {
   const toast = useApp((s) => s.toast)
+  const categories = useCategories()
   const [draft, setDraft] = useState<Expense | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -37,7 +39,12 @@ export function ExpenseDialog({
             date: today(),
             total: 0,
             taxAmount: 0,
-            category: 'Other',
+            // Prefer the company's own "Other", falling back to its first
+            // category — never a name that is not in its list.
+            category:
+              categories?.find((c) => c.name.toLowerCase() === 'other')?.name ??
+              categories?.[0]?.name ??
+              'Other',
             currency: company.currency,
             paymentMethod: 'Card',
             source: 'manual',
@@ -45,7 +52,7 @@ export function ExpenseDialog({
             updatedAt: now,
           },
     )
-  }, [open, expense, company])
+  }, [open, expense, company, categories])
 
   if (!draft) return null
 
@@ -116,9 +123,16 @@ export function ExpenseDialog({
               value={draft.category}
               onChange={(event) => patch({ category: event.target.value })}
             >
-              {EXPENSE_CATEGORIES.map((category) => (
-                <option key={category} value={category}>
-                  {category}
+              {/* An expense saved before a category was renamed keeps its own
+                  value, so make sure it is still selectable. */}
+              {(categories ?? []).some((c) => c.name === draft.category) || !draft.category
+                ? null
+                : (
+                  <option value={draft.category}>{draft.category}</option>
+                )}
+              {(categories ?? []).map((category) => (
+                <option key={category.id} value={category.name}>
+                  {category.name}
                 </option>
               ))}
             </Select>

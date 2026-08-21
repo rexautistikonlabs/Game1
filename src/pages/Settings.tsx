@@ -18,13 +18,14 @@ import { Button, IconButton } from '../components/ui/Button'
 import { Card, SectionTitle } from '../components/ui/Card'
 import { Chip } from '../components/ui/Badge'
 import { CompanyAvatar } from '../components/CompanySwitcher'
+import { CategoryManager } from '../components/CategoryManager'
 import { CompanyForm } from '../components/CompanyForm'
 import { Modal } from '../components/ui/Modal'
 import { PageHeader } from '../components/PageHeader'
 import { Segmented } from '../components/ui/SearchInput'
 import { CardsSkeleton } from '../components/ui/Skeleton'
 import { useConfirm } from '../components/ui/Confirm'
-import { db, deleteCompanyCascade } from '../db/db'
+import { db, deleteCompanyCascade, seedCategories } from '../db/db'
 import { backupFilename, createBackup, restoreBackup } from '../lib/backup'
 import { blankCompany, resetToSampleData } from '../db/seed'
 import { isDesktop, readFileAsText, saveFile } from '../lib/download'
@@ -68,7 +69,10 @@ export function Settings() {
   const saveCompany = async (company: Company) => {
     const isNew = !companies.some((c) => c.id === company.id)
     await db.companies.put(company)
-    if (isNew) await setActiveCompany(company.id)
+    if (isNew) {
+      await seedCategories(company.id)
+      await setActiveCompany(company.id)
+    }
     toast(isNew ? `${company.name} added` : `${company.name} saved`)
     setEditing(null)
     setCreating(false)
@@ -242,6 +246,11 @@ export function Settings() {
               </div>
             ))}
           </div>
+        </Card>
+
+        {/* ---- Expense categories ---- */}
+        <Card>
+          <CategoryManager company={active} />
         </Card>
 
         {/* ---- Appearance ---- */}

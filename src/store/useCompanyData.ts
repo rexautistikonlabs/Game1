@@ -1,7 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db } from '../db/db'
 import { useApp } from './useApp'
-import type { Client, Company, Document, Expense } from '../types'
+import type { Category, Client, Company, Document, Expense } from '../types'
 
 /**
  * Reads an app-level setting reactively, so a value written anywhere in the app
@@ -65,4 +65,14 @@ export function useExpenses(): Expense[] | undefined {
 
 export function useDocument(id?: string): Document | undefined | null {
   return useLiveQuery(async () => (id ? ((await db.documents.get(id)) ?? null) : null), [id])
+}
+
+/** The active company's expense categories, in their configured order. */
+export function useCategories(): Category[] | undefined {
+  const companyId = useApp((s) => s.activeCompanyId)
+  return useLiveQuery(async () => {
+    if (!companyId) return []
+    const rows = await db.categories.where('companyId').equals(companyId).toArray()
+    return rows.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+  }, [companyId])
 }

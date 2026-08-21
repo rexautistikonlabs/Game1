@@ -44,6 +44,15 @@ export interface Client {
 export type DocumentKind = 'invoice' | 'receipt'
 export type DocumentStatus = 'draft' | 'sent' | 'paid'
 
+/** How often a recurring invoice repeats. Deliberately only three options. */
+export type RecurrenceInterval = 'monthly' | 'quarterly' | 'yearly'
+
+export const RECURRENCE_LABELS: Record<RecurrenceInterval, string> = {
+  monthly: 'Monthly',
+  quarterly: 'Quarterly',
+  yearly: 'Yearly',
+}
+
 export interface LineItem {
   id: string
   description: string
@@ -82,6 +91,21 @@ export interface Document {
   discount: number
   notes?: string
   currency: string
+
+  // ---- Recurring invoices ----
+  //
+  // The recurrence lives on one document per series — the template. Copies it
+  // generates carry `seriesId` but no `recurrence`, so there is exactly one
+  // record that decides when the next invoice appears.
+  /** Set only on the template. Absent means this document does not repeat. */
+  recurrence?: RecurrenceInterval
+  /** Issue date of the next invoice to generate. Template only. */
+  nextIssueDate?: string
+  /** Stop generating once `nextIssueDate` passes this. Template only. */
+  recurrenceEndDate?: string
+  /** The template's id, on every member of the series including the template. */
+  seriesId?: string
+
   createdAt: string
   updatedAt: string
 }
@@ -118,6 +142,20 @@ export interface Attachment {
   createdAt: string
 }
 
+/**
+ * A company's expense category picklist. Expenses store the category *name*
+ * rather than an id, exactly as documents snapshot their client: renaming or
+ * deleting a category never rewrites what an old expense says it was for.
+ */
+export interface Category {
+  id: string
+  companyId: string
+  name: string
+  /** Lower sorts first; ties fall back to name. */
+  sortOrder: number
+  createdAt: string
+}
+
 export interface Setting {
   key: string
   value: unknown
@@ -132,7 +170,8 @@ export interface DocumentTotals {
   total: number
 }
 
-export const EXPENSE_CATEGORIES = [
+/** Seeded into every new company's category list; editable from Settings. */
+export const DEFAULT_EXPENSE_CATEGORIES = [
   'Office Supplies',
   'Travel',
   'Meals & Entertainment',

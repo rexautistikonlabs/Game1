@@ -1,4 +1,4 @@
-import { db, getSetting, newId, setSetting } from './db'
+import { db, getSetting, newId, seedCategories, setSetting } from './db'
 import { addDays, today } from '../lib/format'
 import type { Client, Company, Document, Expense, LineItem } from '../types'
 
@@ -462,24 +462,33 @@ async function runSeed(): Promise<void> {
     },
   ]
 
-  await db.transaction('rw', [db.companies, db.clients, db.documents, db.expenses, db.settings], async () => {
-    await db.companies.bulkAdd([nonprofit, forProfit])
-    await db.clients.bulkAdd(clients)
-    await db.documents.bulkAdd(documents)
-    await db.expenses.bulkAdd(expenses)
-    await setSetting(SEED_FLAG, true)
-    await setSetting('activeCompanyId', nonprofit.id)
-    // Tells the dashboard to explain that these two companies are examples.
-    // Dismissing it (or resetting the demo data) flips this.
-    await setSetting(SAMPLE_TIP_FLAG, true)
-  })
+  await db.transaction(
+    'rw',
+    [db.companies, db.clients, db.documents, db.expenses, db.settings],
+    async () => {
+      await db.companies.bulkAdd([nonprofit, forProfit])
+      await db.clients.bulkAdd(clients)
+      await db.documents.bulkAdd(documents)
+      await db.expenses.bulkAdd(expenses)
+      await setSetting(SEED_FLAG, true)
+      await setSetting('activeCompanyId', nonprofit.id)
+      // Tells the dashboard to explain that these two companies are examples.
+      // Dismissing it (or resetting the demo data) flips this.
+      await setSetting(SAMPLE_TIP_FLAG, true)
+    },
+  )
+
+  // Outside the transaction above: seedCategories opens its own, and Dexie
+  // does not allow a nested transaction on a table the outer one did not claim.
+  await seedCategories(nonprofit.id)
+  await seedCategories(forProfit.id)
 }
 
 /** Wipes everything and re-seeds — the "reset demo data" button in Settings. */
 export async function resetToSampleData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.companies, db.clients, db.documents, db.expenses, db.attachments, db.settings],
+    [db.companies, db.clients, db.documents, db.expenses, db.attachments, db.categories, db.settings],
     async () => {
       await Promise.all([
         db.companies.clear(),
@@ -487,6 +496,7 @@ export async function resetToSampleData(): Promise<void> {
         db.documents.clear(),
         db.expenses.clear(),
         db.attachments.clear(),
+        db.categories.clear(),
         db.settings.clear(),
       ])
     },

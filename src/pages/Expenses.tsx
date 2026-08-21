@@ -24,8 +24,8 @@ import { useConfirm } from '../components/ui/Confirm'
 import { db } from '../db/db'
 import { formatDate, formatMoney, monthLabel, monthStart, today, yearStart } from '../lib/format'
 import { useApp } from '../store/useApp'
-import { useActiveCompany, useDocuments, useExpenses } from '../store/useCompanyData'
-import { EXPENSE_CATEGORIES, type Expense } from '../types'
+import { useActiveCompany, useCategories, useDocuments, useExpenses } from '../store/useCompanyData'
+import type { Expense } from '../types'
 
 type Period = 'month' | 'year' | 'all'
 
@@ -34,6 +34,7 @@ export function Expenses() {
   const company = useActiveCompany()
   const expenses = useExpenses()
   const documents = useDocuments()
+  const categories = useCategories()
   const [searchParams, setSearchParams] = useSearchParams()
   const toast = useApp((s) => s.toast)
   const { confirm, dialog } = useConfirm()
@@ -80,7 +81,14 @@ export function Expenses() {
   const filteredTax = filtered.reduce((sum, expense) => sum + expense.taxAmount, 0)
   const scannedCount = filtered.filter((expense) => expense.source === 'scan').length
 
-  const usedCategories = [...new Set(expenses.map((expense) => expense.category))].sort()
+  // The company's configured categories, plus any older value still attached to
+  // an expense, so filtering can always reach every row.
+  const filterCategories = [
+    ...new Set([
+      ...(categories ?? []).map((category) => category.name),
+      ...expenses.map((expense) => expense.category),
+    ]),
+  ].filter(Boolean)
 
   const openScan = async (expense: Expense) => {
     if (!expense.attachmentId) return
@@ -205,7 +213,7 @@ export function Expenses() {
               aria-label="Filter by category"
             >
               <option value="all">All categories</option>
-              {(usedCategories.length ? usedCategories : EXPENSE_CATEGORIES).map((option) => (
+              {filterCategories.map((option) => (
                 <option key={option} value={option}>
                   {option}
                 </option>

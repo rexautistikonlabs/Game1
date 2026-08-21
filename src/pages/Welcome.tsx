@@ -7,7 +7,7 @@ import { CompanyIllustration } from '../components/ui/Illustrations'
 import { blankCompany, resetToSampleData } from '../db/seed'
 import { restoreBackup } from '../lib/backup'
 import { readFileAsText } from '../lib/download'
-import { db } from '../db/db'
+import { db, seedCategories } from '../db/db'
 import { useApp } from '../store/useApp'
 import type { Company } from '../types'
 
@@ -24,6 +24,7 @@ export function Welcome() {
 
   const createCompany = async (company: Company) => {
     await db.companies.add(company)
+    await seedCategories(company.id)
     await useApp.getState().setActiveCompany(company.id)
     toast(`${company.name} is ready to go`)
   }

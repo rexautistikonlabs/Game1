@@ -1,11 +1,13 @@
 import Dexie, { type Table } from 'dexie'
-import type {
-  Attachment,
-  Client,
-  Company,
-  Document,
-  Expense,
-  Setting,
+import {
+  DEFAULT_EXPENSE_CATEGORIES,
+  type Attachment,
+  type Category,
+  type Client,
+  type Company,
+  type Document,
+  type Expense,
+  type Setting,
 } from '../types'
 
 /**
@@ -18,10 +20,12 @@ export class SimpleBooksDB extends Dexie {
   documents!: Table<Document, string>
   expenses!: Table<Expense, string>
   attachments!: Table<Attachment, string>
+  categories!: Table<Category, string>
   settings!: Table<Setting, string>
 
   constructor() {
     super('simplebooks')
+
     this.version(1).stores({
       companies: 'id, name, createdAt',
       clients: 'id, companyId, name, [companyId+name]',
@@ -30,6 +34,34 @@ export class SimpleBooksDB extends Dexie {
       attachments: 'id, companyId',
       settings: 'key',
     })
+
+    // v2 adds per-company expense categories and the recurring-invoice index.
+    this.version(2)
+      .stores({
+        categories: 'id, companyId, name, [companyId+name]',
+        documents:
+          'id, companyId, kind, status, issueDate, number, seriesId, nextIssueDate, ' +
+          '[companyId+kind], [companyId+status], [companyId+recurrence]',
+      })
+      .upgrade(async (tx) => {
+        // Existing installs have companies but no category list yet. Seed each
+        // one with the defaults so the pickers are never empty after upgrading.
+        const companies = await tx.table('companies').toArray()
+        const now = new Date().toISOString()
+        const rows: Category[] = []
+        for (const company of companies as Company[]) {
+          DEFAULT_EXPENSE_CATEGORIES.forEach((name, index) => {
+            rows.push({
+              id: `${company.id}-cat-${index}`,
+              companyId: company.id,
+              name,
+              sortOrder: index,
+              createdAt: now,
+            })
+          })
+        }
+        if (rows.length) await tx.table('categories').bulkAdd(rows)
+      })
   }
 }
 
@@ -53,12 +85,13 @@ export async function setSetting(key: string, value: unknown): Promise<void> {
 export async function deleteCompanyCascade(companyId: string): Promise<void> {
   await db.transaction(
     'rw',
-    [db.companies, db.clients, db.documents, db.expenses, db.attachments],
+    [db.companies, db.clients, db.documents, db.expenses, db.attachments, db.categories],
     async () => {
       await db.clients.where('companyId').equals(companyId).delete()
       await db.documents.where('companyId').equals(companyId).delete()
       await db.expenses.where('companyId').equals(companyId).delete()
       await db.attachments.where('companyId').equals(companyId).delete()
+      await db.categories.where('companyId').equals(companyId).delete()
       await db.companies.delete(companyId)
     },
   )
@@ -85,4 +118,20 @@ export async function claimNextNumber(
     )
     return `${prefix}${String(next).padStart(4, '0')}`
   })
+}
+
+/** Gives a brand-new company the default expense category list. */
+export async function seedCategories(companyId: string): Promise<void> {
+  const existing = await db.categories.where('companyId').equals(companyId).count()
+  if (existing > 0) return
+  const now = new Date().toISOString()
+  await db.categories.bulkPut(
+    DEFAULT_EXPENSE_CATEGORIES.map((name, index) => ({
+      id: `${companyId}-cat-${index}`,
+      companyId,
+      name,
+      sortOrder: index,
+      createdAt: now,
+    })),
+  )
 }

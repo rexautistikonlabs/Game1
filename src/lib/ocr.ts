@@ -1,4 +1,4 @@
-import { EXPENSE_CATEGORIES } from '../types'
+import { DEFAULT_EXPENSE_CATEGORIES } from '../types'
 
 export interface OcrFields {
   vendor: string
@@ -309,7 +309,7 @@ function titleCaseIfShouting(text: string): string {
     .replace(/\b(Llc|Inc|Ltd|Plc)\b/g, (m) => m.toUpperCase())
 }
 
-const CATEGORY_HINTS: [RegExp, (typeof EXPENSE_CATEGORIES)[number]][] = [
+const CATEGORY_HINTS: [RegExp, (typeof DEFAULT_EXPENSE_CATEGORIES)[number]][] = [
   [/\b(hotels?|motels?|inn|airlines?|airways|flights?|uber|lyft|taxi|rail|trains?|parking|tolls?|rental\s*car|hertz|avis|gas|fuel|petrol|shell|chevron|bp|amtrak|expedia|airbnb)\b/i, 'Travel'],
   [/\b(restaurants?|cafe|caf|coffee|starbucks|pizza|diner|bar|grill|catering|bakery|deli|lunch|dinner|breakfast|food|kitchen|brewing|taqueria)\b/i, 'Meals & Entertainment'],
   [/\b(staples|office\s*depot|officemax|paper|toner|ink\s*cartridge|stationery|pens?|envelopes?|binders?|notebooks?)\b/i, 'Office Supplies'],
@@ -324,22 +324,38 @@ const CATEGORY_HINTS: [RegExp, (typeof EXPENSE_CATEGORIES)[number]][] = [
   [/\b(volunteers?|donations?|grants?|programs?|outreach|community|workshops?|scholarships?)\b/i, 'Program Expenses'],
 ]
 
-export function guessCategory(text: string): string {
-  for (const [pattern, category] of CATEGORY_HINTS) {
-    if (pattern.test(text)) return category
+/**
+ * Guesses a category from the receipt text.
+ *
+ * `available` is the company's own category list. The guess is only returned if
+ * that company actually has a matching category — otherwise OCR would fill in a
+ * value the user cannot see in the dropdown. Falls back to the company's
+ * "Other" if it has one, then to its first category, then to nothing.
+ */
+export function guessCategory(text: string, available?: readonly string[]): string {
+  const guess = CATEGORY_HINTS.find(([pattern]) => pattern.test(text))?.[1]
+
+  if (!available || available.length === 0) return guess ?? 'Other'
+
+  const match = (name: string) =>
+    available.find((option) => option.toLowerCase() === name.toLowerCase())
+
+  if (guess) {
+    const exact = match(guess)
+    if (exact) return exact
   }
-  return 'Other'
+  return match('Other') ?? available[0]!
 }
 
 /** Turns raw OCR text into a draft expense the user can review. */
-export function extractFields(text: string): OcrFields {
+export function extractFields(text: string, categories?: readonly string[]): OcrFields {
   const total = extractTotal(text)
   return {
     vendor: extractVendor(text),
     date: extractDate(text),
     total,
     taxAmount: extractTax(text, total),
-    category: guessCategory(text),
+    category: guessCategory(text, categories),
   }
 }
 
@@ -347,6 +363,7 @@ export function extractFields(text: string): OcrFields {
 export async function scanReceipt(
   file: File,
   onProgress?: OcrProgress,
+  categories?: readonly string[],
 ): Promise<OcrResult & { imageDataUrl: string }> {
   const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name)
 
@@ -361,5 +378,5 @@ export async function scanReceipt(
       })
 
   const { text, confidence } = await recognizeImage(imageDataUrl, onProgress)
-  return { ...extractFields(text), text, confidence, imageDataUrl }
+  return { ...extractFields(text, categories), text, confidence, imageDataUrl }
 }

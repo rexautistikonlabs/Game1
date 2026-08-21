@@ -1,5 +1,5 @@
 import { db } from '../db/db'
-import type { Attachment, Client, Company, Document, Expense, Setting } from '../types'
+import type { Attachment, Category, Client, Company, Document, Expense, Setting } from '../types'
 
 export interface BackupFile {
   app: 'simplebooks'
@@ -10,18 +10,21 @@ export interface BackupFile {
   documents: Document[]
   expenses: Expense[]
   attachments: Attachment[]
+  categories: Category[]
   settings: Setting[]
 }
 
 export async function createBackup(): Promise<BackupFile> {
-  const [companies, clients, documents, expenses, attachments, settings] = await Promise.all([
-    db.companies.toArray(),
-    db.clients.toArray(),
-    db.documents.toArray(),
-    db.expenses.toArray(),
-    db.attachments.toArray(),
-    db.settings.toArray(),
-  ])
+  const [companies, clients, documents, expenses, attachments, categories, settings] =
+    await Promise.all([
+      db.companies.toArray(),
+      db.clients.toArray(),
+      db.documents.toArray(),
+      db.expenses.toArray(),
+      db.attachments.toArray(),
+      db.categories.toArray(),
+      db.settings.toArray(),
+    ])
   return {
     app: 'simplebooks',
     version: 1,
@@ -31,6 +34,7 @@ export async function createBackup(): Promise<BackupFile> {
     documents,
     expenses,
     attachments,
+    categories,
     settings,
   }
 }
@@ -41,6 +45,7 @@ export interface RestoreResult {
   documents: number
   expenses: number
   attachments: number
+  categories: number
 }
 
 function assertBackup(data: unknown): asserts data is BackupFile {
@@ -72,7 +77,7 @@ export async function restoreBackup(
 
   await db.transaction(
     'rw',
-    [db.companies, db.clients, db.documents, db.expenses, db.attachments, db.settings],
+    [db.companies, db.clients, db.documents, db.expenses, db.attachments, db.categories, db.settings],
     async () => {
       if (mode === 'replace') {
         await Promise.all([
@@ -81,6 +86,7 @@ export async function restoreBackup(
           db.documents.clear(),
           db.expenses.clear(),
           db.attachments.clear(),
+          db.categories.clear(),
           db.settings.clear(),
         ])
       }
@@ -91,6 +97,7 @@ export async function restoreBackup(
       await db.documents.bulkPut(backup.documents ?? [])
       await db.expenses.bulkPut(backup.expenses ?? [])
       await db.attachments.bulkPut(backup.attachments ?? [])
+      await db.categories.bulkPut(backup.categories ?? [])
       if (mode === 'replace') await db.settings.bulkPut(backup.settings ?? [])
     },
   )
@@ -101,6 +108,7 @@ export async function restoreBackup(
     documents: backup.documents?.length ?? 0,
     expenses: backup.expenses?.length ?? 0,
     attachments: backup.attachments?.length ?? 0,
+    categories: backup.categories?.length ?? 0,
   }
 }
 

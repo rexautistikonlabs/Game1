@@ -271,6 +271,21 @@ final class Contact {
         touch()
     }
 
+    /// Marks this contact and its whole history as shared with the team, or
+    /// withdraws it.
+    ///
+    /// Bulk on purpose: a staffer turning on sharing means "share what I know
+    /// about this business", not "share the contact row but not the visits that
+    /// give it meaning". Lives on the model rather than in a service because it
+    /// is a plain mutation with no I/O — the actual projection and upload is
+    /// `AppEnvironment.projectToTeam`'s job.
+    func setSharedWithTeam(_ isShared: Bool) {
+        isSharedWithTeam = isShared
+        for visit in visits ?? [] { visit.isSharedWithTeam = isShared }
+        for gift in gifts ?? [] { gift.isSharedWithTeam = isShared }
+        touch()
+    }
+
     /// Recomputes the cached rollups and the warmth score from the record's own
     /// children. Called after any visit or gift changes; cheap enough to be
     /// called liberally, and the single source of truth for these fields.

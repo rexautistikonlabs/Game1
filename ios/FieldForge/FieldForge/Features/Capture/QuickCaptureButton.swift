@@ -127,7 +127,7 @@ struct QuickCaptureButton: View {
             }
             .padding(.horizontal, isFanned ? 0 : Space.lg)
             .frame(width: isFanned ? 56 : nil, height: 56)
-            .foregroundStyle(.white)
+            .foregroundStyle(Palette.onAccent)
             .background(Palette.brand, in: Capsule())
             .shadow(color: .black.opacity(0.22), radius: 10, y: 4)
         }

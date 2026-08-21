@@ -79,6 +79,30 @@ enum Feature: String, CaseIterable {
     /// documents themselves are never touched — see `historyWindowMonths`.
     case unlimitedHistory
 
+    /// Whether the feature actually exists yet.
+    ///
+    /// This flag exists so an unbuilt feature cannot be sold by accident. The
+    /// paywall lists only available features, and `isEnabled` returns false for
+    /// anything unavailable regardless of tier — so a paying customer never
+    /// finds a control that does nothing.
+    ///
+    /// Removing a feature from this list is a deliberate act, which is the
+    /// point: it should take a code change and a test failure to start charging
+    /// for something.
+    var isAvailable: Bool {
+        switch self {
+        case .assignFollowUps:
+            // Assigning a follow-up to a teammate needs the follow-up itself to
+            // reach them, and the shared zone currently carries contact
+            // projections only. Delivering it means a second projection type
+            // with the same privacy discipline — real work, not a toggle. Until
+            // then the control is not shown and the tier does not claim it.
+            return false
+        default:
+            return true
+        }
+    }
+
     var isFree: Bool {
         switch self {
         case .documentGeneration, .signatureCapture, .coreBranding, .coreCRM,
@@ -176,6 +200,9 @@ final class Entitlements {
     // MARK: Queries
 
     func isEnabled(_ feature: Feature) -> Bool {
+        // An unbuilt feature is never enabled, whatever the tier. Better to
+        // hide a control than to ship one that quietly does nothing.
+        guard feature.isAvailable else { return false }
         if feature.isFree { return true }
         return tier == .team
     }

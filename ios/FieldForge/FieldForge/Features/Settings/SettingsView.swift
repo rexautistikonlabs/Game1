@@ -29,6 +29,7 @@ struct SettingsView: View {
                 organizationSection
                 staffSection
                 teamSection
+                dataSection
                 subscriptionSection
                 storageSection
                 aboutSection
@@ -178,6 +179,34 @@ struct SettingsView: View {
             Text("Team")
         } footer: {
             Text("Warmth ratings, giving history and team notes are shared. Private notes on a contact or a visit never leave this iPhone, on any tier.")
+        }
+    }
+
+    // MARK: Data
+
+    private var dataSection: some View {
+        Section {
+            NavigationLink {
+                ExportView()
+            } label: {
+                HStack(spacing: Space.md) {
+                    Image(systemName: "tablecells")
+                        .foregroundStyle(app.entitlements.isEnabled(.bulkExport) ? Palette.brand : Palette.textSecondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Export to CSV")
+                            .font(Type.body)
+                        Text(app.entitlements.isEnabled(.bulkExport)
+                             ? "Contacts, donations and documents"
+                             : "Part of FieldForge Team")
+                            .font(Type.caption)
+                            .foregroundStyle(Palette.textSecondary)
+                    }
+                }
+            }
+        } header: {
+            Text("Your data")
+        } footer: {
+            Text("Exports are built on this iPhone and never uploaded.")
         }
     }
 

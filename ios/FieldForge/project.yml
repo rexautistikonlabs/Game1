@@ -34,6 +34,17 @@ targets:
       - path: FieldForge
         excludes:
           - "**/*.md"
+          # These three live inside the source tree for tidiness but must never
+          # be copied into the bundle:
+          #   * Info.plist as a resource collides with the generated one
+          #     ("Multiple commands produce Info.plist") and fails the build.
+          #   * shipping the entitlements file inside the app is a needless
+          #     disclosure of the app's capabilities.
+          #   * the StoreKit config is a debug-only testing artefact; the scheme
+          #     references it by path, which does not require bundling.
+          - "App/Info.plist"
+          - "App/FieldForge.entitlements"
+          - "Monetization/Products.storekit"
     settings:
       base:
         PRODUCT_NAME: FieldForge
@@ -46,7 +57,6 @@ targets:
         SUPPORTS_MACCATALYST: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        DEVELOPMENT_ASSET_PATHS: ""
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
         # Tap to Pay on iPhone needs the com.apple.developer.proximity-reader.payment.acceptance

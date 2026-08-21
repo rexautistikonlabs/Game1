@@ -98,7 +98,7 @@ struct DocumentStepView: View {
                         .frame(maxWidth: .infinity)
                         .frame(minHeight: 78)
                         .padding(Space.sm)
-                        .foregroundStyle(draft.documentKind == kind ? .white : Palette.textPrimary)
+                        .foregroundStyle(draft.documentKind == kind ? Palette.onAccent : Palette.textPrimary)
                         .background(
                             draft.documentKind == kind ? Palette.brand : Palette.surface,
                             in: RoundedRectangle(cornerRadius: Space.corner, style: .continuous)

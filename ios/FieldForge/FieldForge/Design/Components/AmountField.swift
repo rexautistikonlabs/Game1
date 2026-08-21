@@ -146,17 +146,26 @@ struct AmountField: View {
     }
 }
 
-#Preview("Amount field") {
-    @Previewable @State var text = "2500"
-    @Previewable @State var locked = "50000"
-    VStack(spacing: Space.lg) {
-        AmountField(text: $text)
-        AmountField(
-            text: $locked,
-            isLocked: true,
-            lockedReason: "Charged to Visa 4242 — amount cannot be changed"
-        )
+/// Preview host — see the note in `WarmthBadge.swift` on why this is a view
+/// rather than `@Previewable`.
+private struct AmountFieldPreviewHost: View {
+    @State private var text = "2500"
+    @State private var locked = "50000"
+
+    var body: some View {
+        VStack(spacing: Space.lg) {
+            AmountField(text: $text)
+            AmountField(
+                text: $locked,
+                isLocked: true,
+                lockedReason: "Charged to Visa 4242 — amount cannot be changed"
+            )
+        }
+        .padding()
+        .background(Palette.background)
     }
-    .padding()
-    .background(Palette.background)
+}
+
+#Preview("Amount field") {
+    AmountFieldPreviewHost()
 }

@@ -86,6 +86,14 @@ enum Warmth: Int, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
+    /// The colour to draw a glyph in when it sits on top of `tint`.
+    ///
+    /// White in light mode, near-black in dark mode. That single pairing works
+    /// for all six levels because every light-mode tint is dark and every
+    /// dark-mode tint is light — a hardcoded white glyph is invisible on the
+    /// dark-mode `warm` tint at 1.8:1, which is what this exists to prevent.
+    var onTintColor: Color { Color("WarmthGlyph") }
+
     /// Never rely on colour alone — VoiceOver and colour-blind users get the
     /// same information from the label, and the map pins carry glyphs.
     var accessibilityDescription: String { "Warmth: \(label). \(guidance)." }

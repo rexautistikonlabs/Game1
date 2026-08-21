@@ -27,7 +27,6 @@ final class AppEnvironment {
     let transcriber: SpeechTranscriber
     let entitlements: Entitlements
     let store: StoreService
-    let sync: SyncEngine
     let sharedWarmth: SharedWarmthService
     let payments: PaymentCoordinator
     let outbox: OutboxProcessor
@@ -76,7 +75,6 @@ final class AppEnvironment {
         let entitlements = Entitlements()
         self.entitlements = entitlements
         self.store = StoreService(entitlements: entitlements)
-        self.sync = SyncEngine()
 
         self.sharedWarmth = SharedWarmthService(
             modelContainer: container,
@@ -107,10 +105,6 @@ final class AppEnvironment {
         async let productLoad: Void = store.loadProducts()
         _ = await (entitlementRefresh, productLoad)
 
-        await sync.refreshStatus(
-            isProEnabled: entitlements.isPro,
-            isSharingEnabled: entitlements.isTeamSharingEnabled
-        )
         await sharedWarmth.refreshState(isEnabled: entitlements.isSharingActive)
         await sharedWarmth.sync()
 

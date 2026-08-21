@@ -28,7 +28,9 @@ product name appears in `project.yml`, `Info.plist`, and the module name.
 
 ---
 
-## Building it
+## Running it on a device
+
+### 1. Generate the project
 
 There is no `.xcodeproj` in the repository — a generated project file is a merge
 conflict waiting to happen. Use [XcodeGen](https://github.com/yonaskolb/XcodeGen):
@@ -40,27 +42,83 @@ xcodegen generate
 open FieldForge.xcodeproj
 ```
 
-Then set your Apple Developer Team ID in `project.yml` (`DEVELOPMENT_TEAM`) and
-change `PRODUCT_BUNDLE_IDENTIFIER` from `org.example.fieldforge` to your own.
+Every `.swift` file under `FieldForge/` is picked up by a recursive glob, so new
+files need no project surgery — regenerate and they are in the target.
 
-Prefer not to use XcodeGen? Create an iOS App target named `FieldForge`, drag
-the `FieldForge/` folder in as a folder reference, point `INFOPLIST_FILE` and
-`CODE_SIGN_ENTITLEMENTS` at the files in `FieldForge/App/`, and copy the build
-settings out of `project.yml`.
+**Requirements:** Xcode 15.3 or newer, iOS 17.0 deployment target, Swift 5
+language mode. No third-party dependencies — nothing to resolve, no package
+graph, no CocoaPods.
 
-**Requirements:** Xcode 15.3+, iOS 17.0+ deployment target, Swift 5 language
-mode. No third-party dependencies — no CocoaPods, no SPM packages, nothing to
-resolve.
+### 2. Set your team and bundle identifier
 
-> **This code has not been compiled.** It was written in a Linux environment
-> with no Swift toolchain or Xcode available, so treat the first build as a
-> normal first build: expect a handful of signature and inference fixes, not a
-> rewrite. What *has* been verified statically, across all 93 files: brace and
-> delimiter balance, no duplicate top-level declarations, no unresolved
-> type references, and every framework import present for the symbols each file
-> uses. Everything is plain SwiftUI/SwiftData/PDFKit/PassKit/CloudKit against
-> documented iOS 17 APIs, and the pieces most likely to need a nudge are ranked
-> under [Remaining work](#remaining-work).
+In `project.yml`:
+
+```yaml
+DEVELOPMENT_TEAM: ABCDE12345            # your Apple Developer Team ID
+PRODUCT_BUNDLE_IDENTIFIER: org.yourorg.fieldforge
+```
+
+Then re-run `xcodegen generate`. Also update the two identifiers in
+`FieldForge/App/FieldForge.entitlements` to match your account:
+
+```
+merchant.org.example.fieldforge   ->  merchant.<your-bundle-id>
+iCloud.org.example.fieldforge     ->  iCloud.<your-bundle-id>
+```
+
+…and the container name in `Services/Persistence.swift` and
+`Services/SharedWarmth/SharedWarmthService.swift`, both of which currently say
+`iCloud.org.example.fieldforge`.
+
+### 3. Run it
+
+Select your iPhone, hit ⌘R. On first launch Xcode will ask to trust the
+developer certificate on the device (Settings → General → VPN & Device
+Management).
+
+**What works immediately, with no account setup at all:** capture, OCR,
+dictation, GPS check-in, both document types, signatures, email/AirDrop/print,
+the CRM, the map, follow-ups and route mode. This is the majority of the app,
+and it works in airplane mode.
+
+**What needs Apple Developer configuration** is listed under
+[Remaining work](#remaining-work) — Apple Pay, iCloud team sharing and
+subscriptions each need a portal identifier before they do anything.
+
+### If you would rather not use XcodeGen
+
+Create an iOS App target named `FieldForge`, drag the `FieldForge/` folder in as
+a folder reference, and set:
+
+- `INFOPLIST_FILE` → `FieldForge/App/Info.plist`
+- `CODE_SIGN_ENTITLEMENTS` → `FieldForge/App/FieldForge.entitlements`
+- `IPHONEOS_DEPLOYMENT_TARGET` → `17.0`, `SWIFT_VERSION` → `5.0`
+- Exclude `App/Info.plist`, `App/FieldForge.entitlements` and
+  `Monetization/Products.storekit` from **Copy Bundle Resources**. Leaving the
+  Info.plist in there is a hard build failure ("Multiple commands produce…"),
+  and shipping your entitlements file inside the app is a needless disclosure.
+
+### Running the tests
+
+```bash
+xcodebuild test -scheme FieldForge \
+  -destination 'platform=iOS Simulator,name=iPhone 15'
+```
+
+Or ⌘U in Xcode. The suite is pure logic and rendering — no network, no
+CloudKit, no simulator permissions — so it runs clean on a fresh checkout.
+
+> **Still not compiled here.** This was written in a Linux container with no
+> Swift toolchain, so the first build is a first build. What has been verified
+> statically across all 97 files: delimiter balance, no duplicate top-level
+> declarations, no unresolved type references, every framework import present
+> for the symbols each file uses, every `Color("…")` resolving to a real asset,
+> every `#Predicate` in an expressible shape, and no `ViewBuilder` block over
+> the ten-child limit. Known Xcode-15 incompatibilities have been removed
+> (`@Previewable`), and the two classic build-stoppers — an Info.plist copied
+> as a bundle resource and an empty AppIcon set — are fixed. Expect a handful
+> of signature and inference fixes, not a rewrite; the files most likely to
+> need one are ranked under [Remaining work](#remaining-work).
 
 ### Before the first run
 
@@ -492,7 +550,9 @@ Swift Testing, weighted toward the places where being wrong causes real harm:
 | `SharedWarmthPrivacyTests` | **The private-notes guarantee** — sentinel strings, every CloudKit key walked, merge stickiness, store separation |
 | `RoutePlannerTests` | Route ordering on known geometry, distance consistency, progress |
 | `ReminderTimingTests` | Time-of-day scheduling; never fires in the small hours |
-| `AuditAndGatingTests` | Audit trail completeness, void semantics, the free/paid line, letterhead migration |
+| `AuditAndGatingTests` | Audit trail completeness, void semantics, the free/paid line, letterhead migration, the unbuilt-feature guard |
+| `PDFPaginationTests` | Real PDFs through the real templates: multi-page letters with photos, every letterhead × typeface × footer combination, receipts staying to one page |
+| `CSVExporterTests` | RFC 4180 quoting against adversarial donor names, BOM and CRLF, private notes excluded from a shareable export |
 
 ---
 
@@ -552,25 +612,25 @@ harmful bug, so the guard is a hard failure rather than a warning.
 
 ### Genuinely unfinished
 
-- **Bulk CSV export** is gated and described on the paywall but not implemented.
-- **In-kind photo capture** now renders into the letter and has full model and
-  thumbnail support, but the gift step still has no inline camera button — the
-  photos have to be added from the contact record. That is one screen away from
-  done.
-- **`SyncEngine`** is now vestigial. `SharedWarmthService` owns team sharing;
-  `SyncEngine` only reports iCloud account status for the private-database
-  mirror. It should be folded into `Persistence` and deleted.
-- **Assigning follow-ups to teammates** is gated and described but not
-  implemented — the projection would need a `assignedTo` field, which is a
-  deliberate decision to make rather than a field to add casually.
-- **Voice note audio** is transcribed but the `.m4a` is not retained — only the
-  text. `AttachmentKind.voiceNote` exists for when it should be.
-- **Notification actions** ("Mark done", "Remind me in a week") are registered
-  but no `UNUserNotificationCenterDelegate` handles the taps yet, so they
-  currently just open the app.
+- **Assigning follow-ups to a teammate.** Warmth, notes and giving history sync
+  today; handing a specific reminder to a named colleague does not, because the
+  shared zone carries contact projections only and the sync loop is typed to
+  them in fourteen places. Delivering it means a second projection type with the
+  same four-mechanism privacy discipline — real work, not a toggle.
+
+  Rather than ship a control that quietly does nothing, `Feature.isAvailable`
+  marks it unbuilt: `isEnabled` returns false even for a paying customer, the
+  paywall filters it out of what it sells, and the Team screen says plainly that
+  it is missing. A test asserts that exactly one feature is in that state, so
+  the flag cannot quietly become a dumping ground.
+
+- **The app icon is a placeholder** — a generated teal chevron, good enough to
+  find on a home screen during testing and obviously provisional to a designer.
+
 - **Localisation.** All strings are inline English. `SWIFT_EMIT_LOC_STRINGS` is
-  on, so extraction is a build away, but a Spanish-language outreach team is a
+  on so extraction is a build away, but a Spanish-language outreach team is a
   very plausible first request.
+
 - **A UI test** for the four-step capture flow. The logic underneath is covered;
   the flow itself is not.
 
@@ -578,25 +638,19 @@ harmful bug, so the guard is a hard failure rather than a warning.
 
 Ranked by how much I would bet against them:
 
-1. `PDFLayout.swift` — the Core Text flip and the `CTFrameGetVisibleStringRange`
-   page-break loop. The logic is standard, but the coordinate reconciliation
-   between UIKit's top-down PDF context and Core Text's bottom-up drawing is
-   exactly the kind of thing worth eyeballing on a real render.
-2. `LiveTextScanner`'s normalisation of `RecognizedItem.bounds` (a view-space
-   quadrilateral) into Vision's normalised bottom-left-origin box. The sign
-   parser's "largest text" heuristic depends on getting this right.
-3. `PKPaymentAuthorizationControllerDelegate` isolation. It uses
-   `nonisolated` + `MainActor.assumeIsolated`, which is correct for PassKit's
-   actual threading, but strict-concurrency settings could complain.
-4. SwiftData `#Predicate` shapes — particularly the nil-coalescing one in
-   `OutboxProcessor.purgeCompletedItems`.
-5. `Map(position:selection:)` with tagged `Annotation` content, and
-   `MapPolyline` in Route mode.
-6. The CloudKit async surface in `SharedWarmthService` —
-   `recordZoneChanges(inZoneWith:since:)`, `modifyRecords(saving:deleting:)` and
-   `CKRecordZone.share`. The shapes are right for iOS 17 but this is the file I
-   would put a breakpoint in first.
-7. `DataScannerViewController.capturePhoto()` inside the `onReady` escape
+1. **`SharedWarmthService`** — the CloudKit async surface
+   (`recordZoneChanges(inZoneWith:since:)`, `modifyRecords(saving:deleting:)`,
+   `CKShare(recordZoneID:)`). The shapes are right for iOS 17, and the zone-wide
+   share is now looked up by `CKRecordNameZoneWideShare` rather than
+   `CKRecordZone.share`, but this is the file to put a breakpoint in first.
+2. **`PDFLayout.usedHeight(of:in:)`** — the Core Text line-origin arithmetic
+   that replaced the old re-measure. It is the correct approach and also the
+   fiddliest twenty lines in the project.
+3. **`ItemCameraView`** on a device: `UIImagePickerController` with `.camera`
+   needs a real camera, so it is untestable in the simulator by definition.
+4. **`Map(position:selection:)`** with tagged `Annotation` content, and
+   `MapPolyline` in route mode.
+5. **`DataScannerViewController.capturePhoto()`** inside the `onReady` escape
    hatch — the closure captures the scanner, which is correct but worth
    confirming does not retain it past dismissal.
 

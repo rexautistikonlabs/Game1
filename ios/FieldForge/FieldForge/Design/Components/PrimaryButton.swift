@@ -85,9 +85,9 @@ struct PrimaryButton: View {
 
     private var foregroundColor: Color {
         switch role {
-        case .primary: return .white
+        case .primary: return Palette.onAccent
         case .secondary: return Palette.textPrimary
-        case .destructive: return .white
+        case .destructive: return Palette.onAccent
         }
     }
 

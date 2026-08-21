@@ -194,9 +194,23 @@ final class PDFCanvas {
 
     // MARK: Pages
 
+    /// Hard ceiling on pages.
+    ///
+    /// Nothing this app produces legitimately runs past a few pages, so a
+    /// document heading for a hundred means a layout loop, not a long letter.
+    /// Stopping is far better than hanging the phone while a donor waits.
+    static let maximumPages = 40
+
+    private(set) var didHitPageLimit = false
+
     /// Starts a new page and resets the cursor below the running header.
     @discardableResult
     func beginPage() -> Int {
+        guard pageIndex + 1 < Self.maximumPages else {
+            didHitPageLimit = true
+            AppLog.documents.error("Document hit the \(Self.maximumPages, privacy: .public)-page limit; stopping")
+            return pageIndex
+        }
         finishPageFooter()
         context.beginPage()
         pageIndex += 1
@@ -304,21 +318,19 @@ final class PDFCanvas {
                 startingAt: drawnCharacters,
                 in: rect
             )
-            if consumed <= 0 {
+            if consumed.length <= 0 {
                 // Nothing fit on this page. If we are already at the top of a
                 // fresh page the text can never fit — bail rather than loop.
-                if isAtTopOfPage { break }
+                if isAtTopOfPage || didHitPageLimit { break }
                 beginPage()
                 continue
             }
-            drawnCharacters += consumed
-
-            let subrange = NSRange(location: drawnCharacters - consumed, length: consumed)
-            let drawnHeight = measure(text.attributedSubstring(from: subrange), width: blockWidth).height
-            cursorY += min(drawnHeight, available.height)
+            drawnCharacters += consumed.length
+            cursorY += consumed.height
 
             if drawnCharacters < text.length {
                 beginPage()
+                if didHitPageLimit { break }
             }
         }
 
@@ -356,13 +368,26 @@ final class PDFCanvas {
     /// Core Text draws bottom-up; UIGraphicsPDFRenderer hands us a top-down
     /// UIKit context. This is the one place that reconciles the two.
     ///
-    /// - Returns: the number of characters that fit in `rect`.
+    /// - Returns: how many characters fit, and **exactly** how much vertical
+    ///   space they occupied.
+    ///
+    /// The height matters more than it looks. The obvious implementation is to
+    /// re-measure the consumed substring afterwards, and it is wrong: laid out
+    /// on its own, a fragment that ended mid-paragraph breaks into a different
+    /// number of lines than it did inside the full frame, and its paragraph
+    /// spacing applies differently. On a one-paragraph receipt the error is
+    /// invisible; on a multi-page letter with photographs it accumulates into
+    /// overlapping text or a premature page break.
+    ///
+    /// So the height comes from the frame itself — the last line's origin plus
+    /// its descent — which is what Core Text actually did rather than an
+    /// estimate of it.
     private func drawFrame(
         _ framesetter: CTFramesetter,
         startingAt index: Int,
         in rect: CGRect
-    ) -> Int {
-        guard rect.height > 1, rect.width > 1 else { return 0 }
+    ) -> (length: Int, height: CGFloat) {
+        guard rect.height > 1, rect.width > 1 else { return (0, 0) }
         let cg = cgContext
         cg.saveGState()
         cg.textMatrix = .identity
@@ -381,7 +406,36 @@ final class PDFCanvas {
         cg.restoreGState()
 
         let visible = CTFrameGetVisibleStringRange(frame)
-        return visible.length
+        guard visible.length > 0 else { return (0, 0) }
+
+        return (visible.length, Self.usedHeight(of: frame, in: flipped))
+    }
+
+    /// The vertical space a laid-out frame actually consumed.
+    ///
+    /// Line origins are in the path's own bottom-up space, so the used height
+    /// is the distance from the top of the path down to the baseline of the last
+    /// line, plus that line's descent and leading.
+    private static func usedHeight(of frame: CTFrame, in pathRect: CGRect) -> CGFloat {
+        let lines = CTFrameGetLines(frame) as? [CTLine] ?? []
+        guard !lines.isEmpty else { return 0 }
+
+        var origins = [CGPoint](repeating: .zero, count: lines.count)
+        CTFrameGetLineOrigins(frame, CFRangeMake(0, 0), &origins)
+
+        guard let lastOrigin = origins.last, let lastLine = lines.last else { return 0 }
+
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        var leading: CGFloat = 0
+        CTLineGetTypographicBounds(lastLine, &ascent, &descent, &leading)
+
+        // `lastOrigin.y` is the baseline, measured up from the bottom of the
+        // path. The bottom of the last line sits `descent + leading` below it.
+        let bottomOfLastLine = lastOrigin.y - descent - leading
+        let used = pathRect.height - bottomOfLastLine
+        // Never negative, and never more than the space offered.
+        return min(max(used, 0), pathRect.height)
     }
 
     // MARK: Rules and fills
@@ -499,12 +553,18 @@ final class PDFCanvas {
             // Keep a row whole.
             if rowHeight + gutter > remainingHeight, !isAtTopOfPage {
                 beginPage()
+                if didHitPageLimit { break }
             }
+            // A cell taller than an entire empty page cannot be drawn without
+            // running off the bottom. Clamp rather than overflow — a squashed
+            // photograph is recoverable, a document that spills off the page is
+            // not.
+            let effectiveCellHeight = min(cellHeight, max(40, remainingHeight - captionHeight))
             let row = Array(images[rowStart..<min(rowStart + columns, images.count)])
 
             for (column, entry) in row.enumerated() {
                 let x = contentRect.minX + CGFloat(column) * (cellWidth + gutter)
-                let frame = CGRect(x: x, y: cursorY, width: cellWidth, height: cellHeight)
+                let frame = CGRect(x: x, y: cursorY, width: cellWidth, height: effectiveCellHeight)
 
                 // Aspect-fill inside a clip, so no photograph is distorted and
                 // no cell is left with white gaps.
@@ -538,7 +598,7 @@ final class PDFCanvas {
                 }
                 drawn += 1
             }
-            cursorY += rowHeight + gutter
+            cursorY += effectiveCellHeight + captionHeight + gutter
         }
 
         cursorY += spacingAfter

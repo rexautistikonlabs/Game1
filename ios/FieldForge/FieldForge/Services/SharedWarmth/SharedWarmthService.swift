@@ -131,16 +131,11 @@ final class SharedWarmthService {
         }
 
         // Do I own a team zone?
-        do {
-            let zones = try await container.privateCloudDatabase.allRecordZones()
-            if zones.contains(where: { $0.zoneID.zoneName == Self.zoneName }) {
-                let count = (try? await participantCount()) ?? 0
-                state = .owner(participantCount: count)
-            } else {
-                state = .notSetUp
-            }
-        } catch {
-            state = .unavailable("Could not check your iCloud. Everything is still saved on this iPhone.")
+        if await ownsTeamZone() {
+            let count = (try? await participantCount()) ?? 0
+            state = .owner(participantCount: count)
+        } else {
+            state = .notSetUp
         }
         refreshPendingCount()
     }
@@ -186,18 +181,41 @@ final class SharedWarmthService {
 
     /// Fetches the existing share so a second invite does not create a second
     /// team.
+    ///
+    /// A zone-wide share always lives at a well-known record name inside its own
+    /// zone (`CKRecordNameZoneWideShare`). Looking it up by that name is more
+    /// robust than reading `CKRecordZone.share`, which requires the zone object
+    /// to have been fetched with its share reference populated.
+    ///
+    /// A missing share is not an error — it is the normal state before a team
+    /// has been set up — so `unknownItem` is folded into `nil` rather than
+    /// thrown.
     func existingShare() async throws -> CKShare? {
         let zoneID = CKRecordZone.ID(zoneName: Self.zoneName, ownerName: CKCurrentUserDefaultName)
-        let zones = try await container.privateCloudDatabase.allRecordZones()
-        guard let zone = zones.first(where: { $0.zoneID == zoneID }),
-              let shareID = zone.share?.recordID else { return nil }
-        return try await container.privateCloudDatabase.record(for: shareID) as? CKShare
+        let shareID = CKRecord.ID(recordName: CKRecordNameZoneWideShare, zoneID: zoneID)
+        do {
+            return try await container.privateCloudDatabase.record(for: shareID) as? CKShare
+        } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
+            return nil
+        }
     }
 
     private func participantCount() async throws -> Int {
         guard let share = try await existingShare() else { return 0 }
         // The owner is in the participant list; teammates are everyone else.
         return share.participants.filter { $0.role != .owner }.count
+    }
+
+    /// Whether a team zone exists in this account. Cheaper and more direct than
+    /// listing every zone.
+    private func ownsTeamZone() async -> Bool {
+        let zoneID = CKRecordZone.ID(zoneName: Self.zoneName, ownerName: CKCurrentUserDefaultName)
+        do {
+            _ = try await container.privateCloudDatabase.recordZone(for: zoneID)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Stops sharing entirely. Deletes the zone, which withdraws every record
@@ -230,6 +248,8 @@ final class SharedWarmthService {
         projection.update(from: contact, updatedBy: staffDisplayName)
         save()
         refreshPendingCount()
+        // A contact that now exists locally is no longer "team only".
+        refreshTeamOnlyContacts()
     }
 
     /// Withdraws a contact from the team without deleting anything locally.
@@ -269,6 +289,7 @@ final class SharedWarmthService {
             isSyncing = false
             lastSyncedAt = .now
             refreshPendingCount()
+            refreshTeamOnlyContacts()
         }
 
         do {
@@ -535,12 +556,31 @@ final class SharedWarmthService {
     /// Everything the team knows that this device has no local contact for —
     /// the businesses a colleague has visited and you have not. These are the
     /// rows that stop an organization re-knocking its own doors.
-    func teamOnlyProjections() -> [SharedContactProjection] {
+    ///
+    /// **Cached, not computed on read.** Working it out needs two full fetches
+    /// (every projection, every contact) and it is displayed on the home screen,
+    /// so computing it in a view's body would run it on every render pass — a
+    /// visible stutter at a few hundred contacts. Recomputed after a sync and
+    /// after any projection change instead, which is exactly when it can alter.
+    private(set) var teamOnlyContacts: [SharedContactProjection] = []
+
+    /// Recomputes the cache. Cheap enough to call after any projection change;
+    /// far too expensive to call from a view body.
+    func refreshTeamOnlyContacts() {
+        guard state.isActive else {
+            teamOnlyContacts = []
+            return
+        }
         let projections = (try? context.fetch(FetchDescriptor<SharedContactProjection>())) ?? []
+        guard !projections.isEmpty else {
+            teamOnlyContacts = []
+            return
+        }
         let localIDs = Set(
             ((try? context.fetch(FetchDescriptor<Contact>())) ?? []).map(\.id)
         )
-        return projections
+
+        teamOnlyContacts = projections
             .filter { $0.isRemote && !localIDs.contains($0.contactID) && !$0.isWithdrawn }
             .sorted { $0.updatedAt > $1.updatedAt }
     }

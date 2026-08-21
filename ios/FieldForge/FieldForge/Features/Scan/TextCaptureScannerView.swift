@@ -66,6 +66,11 @@ struct TextCaptureScannerView: View {
     /// Set by the live scanner so `finish` can grab a still on confirm.
     @State private var frameProvider: (() async -> Data?)?
     @State private var capturedFrame: Data?
+    /// Set when the live scanner has produced nothing for a while, so the
+    /// screen can suggest something rather than showing a viewfinder that
+    /// looks broken.
+    @State private var hasStruggled = false
+    @State private var scannerFailed = false
 
     /// `DataScanner` needs a device with the Neural Engine and camera
     /// permission; `isAvailable` covers the permission half.
@@ -84,6 +89,9 @@ struct TextCaptureScannerView: View {
                         },
                         onReady: { provider in
                             frameProvider = provider
+                        },
+                        onUnavailable: {
+                            scannerFailed = true
                         }
                     )
                     .ignoresSafeArea()
@@ -114,6 +122,17 @@ struct TextCaptureScannerView: View {
                 guard let item else { return }
                 Task { await recognizeFromLibrary(item) }
             }
+            .onChange(of: liveBlocks.isEmpty) { _, isEmpty in
+                // Any successful read clears the hint; it should not linger
+                // once the scanner is clearly working.
+                if !isEmpty { hasStruggled = false }
+            }
+            .task {
+                // Six seconds of nothing is long enough to be a problem and
+                // short enough that the advice still feels responsive.
+                try? await Task.sleep(for: .seconds(6))
+                if liveBlocks.isEmpty { hasStruggled = true }
+            }
         }
     }
 
@@ -123,6 +142,23 @@ struct TextCaptureScannerView: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             if let errorMessage {
                 InlineBanner(kind: .caution, message: errorMessage)
+            }
+
+            if scannerFailed {
+                InlineBanner(
+                    kind: .caution,
+                    message: "The camera stopped. Close this and try again, or choose a photo instead."
+                )
+            } else if hasStruggled, liveBlocks.isEmpty {
+                // The single most useful thing to say when a scan is not
+                // catching: the fix is almost always distance or glare, and
+                // neither is obvious from an empty viewfinder.
+                InlineBanner(
+                    kind: .info,
+                    message: mode == .sign
+                        ? "Not catching it. Get closer so the name fills the frame, and try an angle that avoids glare."
+                        : "Not catching it. Lay the card on a flat surface in even light, parallel to the phone."
+                )
             }
 
             if let preview = livePreviewName {
@@ -248,6 +284,9 @@ struct LiveTextScanner: UIViewControllerRepresentable {
     /// Called once the scanner exists, handing back a closure that grabs a
     /// still frame. Keeps `DataScannerViewController` out of the SwiftUI view.
     var onReady: ((@escaping () async -> Data?) -> Void)?
+    /// Called if the scanner becomes unavailable mid-session — camera taken by
+    /// another app, thermal shutdown, permission revoked in Settings.
+    var onUnavailable: (() -> Void)?
 
     func makeUIViewController(context: Context) -> DataScannerViewController {
         let scanner = DataScannerViewController(
@@ -272,7 +311,14 @@ struct LiveTextScanner: UIViewControllerRepresentable {
 
     func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {
         guard !scanner.isScanning else { return }
-        try? scanner.startScanning()
+        do {
+            try scanner.startScanning()
+        } catch {
+            // A silent failure here is a black viewfinder with no explanation,
+            // which is the worst possible outcome at a doorstep.
+            AppLog.capture.error("Could not start scanning: \(error.localizedDescription, privacy: .public)")
+            onUnavailable?()
+        }
     }
 
     static func dismantleUIViewController(_ scanner: DataScannerViewController, coordinator: Coordinator) {
@@ -282,16 +328,21 @@ struct LiveTextScanner: UIViewControllerRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onRecognize: onRecognize)
+        Coordinator(onRecognize: onRecognize, onUnavailable: onUnavailable)
     }
 
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
 
         private let onRecognize: ([RecognizedTextBlock]) -> Void
+        private let onUnavailable: (() -> Void)?
         private var items: [UUID: RecognizedTextBlock] = [:]
 
-        init(onRecognize: @escaping ([RecognizedTextBlock]) -> Void) {
+        init(
+            onRecognize: @escaping ([RecognizedTextBlock]) -> Void,
+            onUnavailable: (() -> Void)? = nil
+        ) {
             self.onRecognize = onRecognize
+            self.onUnavailable = onUnavailable
         }
 
         func dataScanner(
@@ -322,8 +373,9 @@ struct LiveTextScanner: UIViewControllerRepresentable {
             _ dataScanner: DataScannerViewController,
             becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable
         ) {
-            AppLog.capture.error("Live scanning became unavailable")
+            AppLog.capture.error("Live scanning became unavailable: \(String(describing: error), privacy: .public)")
             onRecognize([])
+            onUnavailable?()
         }
 
         private func update(with allItems: [RecognizedItem], in scanner: DataScannerViewController) {

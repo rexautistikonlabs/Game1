@@ -215,7 +215,7 @@ struct WarmthMapView: View {
                     HStack(spacing: 4) {
                         Image(systemName: warmth.symbolName)
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Palette.onAccent)
                             .frame(width: 18, height: 18)
                             .background(warmth.tint, in: Circle())
                         Text(warmth.label)
@@ -227,7 +227,7 @@ struct WarmthMapView: View {
             HStack(spacing: 4) {
                 Image(systemName: Warmth.doNotReturn.symbolName)
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Palette.onAccent)
                     .frame(width: 18, height: 18)
                     .background(Warmth.doNotReturn.tint, in: Circle())
                 Text("Do not contact — deliberately off the colour scale")
@@ -338,7 +338,7 @@ struct WarmthMapView: View {
                             .font(Type.secondary.weight(.semibold))
                             .frame(maxWidth: .infinity)
                             .frame(minHeight: Space.minimumTarget)
-                            .foregroundStyle(.white)
+                            .foregroundStyle(Palette.onAccent)
                             .background(Palette.brand, in: RoundedRectangle(cornerRadius: Space.cornerSmall, style: .continuous))
                     }
                     .buttonStyle(.plain)

@@ -40,6 +40,15 @@ enum Palette {
     static let brand = Color("BrandDefault")
     static let brandMuted = Color("BrandMuted")
 
+    /// Foreground for content sitting on top of a saturated fill — `brand`,
+    /// `critical`, the route accent.
+    ///
+    /// Not `.white`. Those fills are dark in light mode and *light* in dark
+    /// mode, so a hardcoded white foreground drops to about 2.2:1 in dark mode
+    /// on every primary button in the app. This pairing keeps it above 7:1 in
+    /// both appearances.
+    static let onAccent = Color("OnAccent")
+
     // States
     static let positive = Color("StatePositive")
     static let caution = Color("StateCaution")

@@ -217,6 +217,31 @@ enum Persistence {
         }
     }
 
+    // MARK: - Whether to attach CloudKit
+
+    /// Whether the *private* store should be mirrored to the user's own private
+    /// CloudKit database.
+    ///
+    /// This is about one person's own devices — iPhone and iPad staying in step —
+    /// and is a different question from whether they share anything with
+    /// teammates. It used to be tied to the team-sharing switch, which meant a
+    /// paying user who turned team sharing off also silently lost their own iPad
+    /// sync. That was a bug in intent, so the two are now independent:
+    ///
+    ///   * private mirror  — Pro, full stop.
+    ///   * team sharing    — Pro *and* the user's explicit opt-in, and it runs
+    ///                       over a shared zone (`SharedWarmthService`), not
+    ///                       through SwiftData at all.
+    ///
+    /// The free tier stays deliberately local-only: no iCloud prompt, no
+    /// account, no surprise. That is a promise, not a limitation to work around.
+    ///
+    /// Read once, at launch, before the container exists — which is why it takes
+    /// plain booleans rather than reaching for `Entitlements`.
+    static func shouldMirrorToPrivateCloudKit(isProEnabled: Bool) -> Bool {
+        isProEnabled
+    }
+
     /// In-memory container for previews and tests, pre-seeded with the sample
     /// organization so every SwiftUI preview in the project renders real data.
     @MainActor

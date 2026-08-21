@@ -357,7 +357,7 @@ struct TodayView: View {
                 HStack(spacing: Space.md) {
                     Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
                         .font(.title2)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Palette.onAccent)
                         .frame(width: 44, height: 44)
                         .background(Color("RoutePath"), in: RoundedRectangle(cornerRadius: Space.cornerSmall, style: .continuous))
 
@@ -437,7 +437,7 @@ struct TodayView: View {
     @ViewBuilder
     private var teamSection: some View {
         if app.sharedWarmth.state.isActive {
-            let teamOnly = app.sharedWarmth.teamOnlyProjections()
+            let teamOnly = app.sharedWarmth.teamOnlyContacts
             if !teamOnly.isEmpty {
                 VStack(alignment: .leading, spacing: Space.sm) {
                     SectionHeader(

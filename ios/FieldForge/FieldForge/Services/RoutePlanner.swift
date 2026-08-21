@@ -105,26 +105,26 @@ final class RoutePlanner {
         isPlanning = true
         defer { isPlanning = false }
 
-        let routable = candidates.filter { $0.coordinate != nil }
-        guard !routable.isEmpty else {
-            stops = []
-            totalDistance = 0
-            return
-        }
-
-        var remaining = routable.map { candidate in
-            Stop(
+        // Filter and unwrap in one pass, so there is no force unwrap relying on
+        // a filter three lines earlier still being correct.
+        var remaining = candidates.compactMap { candidate -> Stop? in
+            guard let coordinate = candidate.coordinate else { return nil }
+            return Stop(
                 id: UUID(),
                 contactID: candidate.contactID,
                 name: candidate.name,
                 subtitle: candidate.subtitle,
-                // Safe: `routable` filtered on this being non-nil.
-                coordinate: candidate.coordinate!,
+                coordinate: coordinate,
                 warmth: candidate.warmth,
                 followUpID: candidate.followUpID,
                 followUpKind: candidate.followUpKind,
                 contactWindow: candidate.contactWindow
             )
+        }
+        guard !remaining.isEmpty else {
+            stops = []
+            totalDistance = 0
+            return
         }
 
         // Nearest neighbour from the staffer's actual position.

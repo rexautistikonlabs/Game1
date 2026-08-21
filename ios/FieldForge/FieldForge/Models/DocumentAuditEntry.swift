@@ -132,10 +132,19 @@ extension GeneratedDocument {
     /// Appends to the trail. The only way an audit entry is created, so there is
     /// one place to look when asking whether something is recorded.
     ///
-    /// Deliberately takes no `ModelContext`: the entry is attached through the
-    /// relationship and saved with whatever transaction the caller is already
-    /// in, so an audit entry can never be committed without the change it
-    /// describes, or vice versa.
+    /// Two deliberate details:
+    ///
+    /// * **It inserts explicitly** via the document's own `modelContext`.
+    ///   SwiftData does propagate inserts through relationships, but the audit
+    ///   trail is the one structure in this app whose entire purpose is being
+    ///   reliable, and "it probably cascades" is not a good enough basis for
+    ///   the record somebody reconstructs a dispute from. When the document is
+    ///   not yet in a context — a preview, a test fixture — the relationship
+    ///   alone still links them.
+    ///
+    /// * **It takes no context parameter.** The entry joins whatever
+    ///   transaction the caller is already in, so an audit entry can never be
+    ///   committed without the change it describes, or the reverse.
     func recordAudit(
         _ action: DocumentAuditEntry.Action,
         detail: String = "",
@@ -149,10 +158,11 @@ extension GeneratedDocument {
             resultingState: deliveryState,
             occurredAt: date
         )
+        // Setting one side is enough — `auditTrail` declares the inverse, so
+        // SwiftData populates the array. Appending to it as well would risk a
+        // duplicate entry in the in-memory copy.
         entry.document = self
-        var trail = auditTrail ?? []
-        trail.append(entry)
-        auditTrail = trail
+        modelContext?.insert(entry)
     }
 
     /// The trail, oldest first, which is how a history is read.

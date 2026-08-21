@@ -388,28 +388,33 @@ private struct RouteStopPin: View {
     let isCurrent: Bool
     let isDone: Bool
 
+    private var diameter: CGFloat { isCurrent ? 42 : 32 }
+
     var body: some View {
         ZStack {
             Circle()
                 .fill(isDone ? Palette.textTertiary : warmth.tint)
-                .frame(width: isCurrent ? 38 : 28, height: isCurrent ? 38 : 28)
-                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+                .frame(width: diameter, height: diameter)
+                // Same two-shadow treatment as the warmth pin: route mode is
+                // used outdoors more than any other screen in the app.
+                .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
+                .shadow(color: .black.opacity(0.22), radius: 5, y: 2)
 
             if isDone {
                 Image(systemName: "checkmark")
                     .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Palette.onAccent)
             } else {
                 Text("\(number)")
                     .font(.system(size: isCurrent ? 17 : 13, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Palette.onAccent)
                     .monospacedDigit()
             }
         }
         .overlay(
             Circle()
-                .strokeBorder(isCurrent ? Color("RoutePath") : .white.opacity(0.9), lineWidth: isCurrent ? 3 : 2)
-                .frame(width: isCurrent ? 38 : 28, height: isCurrent ? 38 : 28)
+                .strokeBorder(isCurrent ? Color("RoutePath") : .white.opacity(0.95), lineWidth: isCurrent ? 3.5 : 2.5)
+                .frame(width: diameter, height: diameter)
         )
         .accessibilityLabel(
             isDone

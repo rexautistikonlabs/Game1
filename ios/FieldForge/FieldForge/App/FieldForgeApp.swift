@@ -29,12 +29,9 @@ struct FieldForgeApp: App {
         // would block launch on the network, which is exactly what this app
         // must never do.
         let cachedEntitlements = MainActor.assumeIsolated { Entitlements() }
-        let shouldSync = MainActor.assumeIsolated {
-            SyncEngine.shouldAttachCloudKit(
-                isProEnabled: cachedEntitlements.isPro,
-                isSharingEnabled: cachedEntitlements.isTeamSharingEnabled
-            )
-        }
+        let shouldSync = Persistence.shouldMirrorToPrivateCloudKit(
+            isProEnabled: cachedEntitlements.isPro
+        )
 
         let environment = MainActor.assumeIsolated {
             let opened = Persistence.open(cloudKitEnabled: shouldSync)

@@ -215,6 +215,29 @@ struct GatingTests {
         }
     }
 
+    @Test("An unbuilt feature is never enabled and never sold")
+    func unavailableFeaturesAreNeverEnabled() {
+        let paid = Entitlements.previewTeam()
+        for feature in Feature.allCases where !feature.isAvailable {
+            // Not enabled even for a paying customer: better to hide a control
+            // than ship one that quietly does nothing.
+            #expect(!paid.isEnabled(feature), "\(feature.rawValue) is unbuilt but reported as enabled")
+        }
+        // And nothing unbuilt reaches the paywall's sell list.
+        let sold = Feature.allCases.filter { !$0.isFree && $0.isAvailable }
+        #expect(sold.allSatisfy(\.isAvailable))
+        #expect(!sold.contains(.assignFollowUps), "assignment is not built yet and must not be advertised")
+    }
+
+    @Test("Everything else is available")
+    func everythingElseIsBuilt() {
+        // A guard against the flag being used as a dumping ground: exactly one
+        // feature is currently unbuilt, and adding another should be a
+        // deliberate act that trips this test.
+        let unavailable = Feature.allCases.filter { !$0.isAvailable }
+        #expect(unavailable == [.assignFollowUps], "unexpected unbuilt features: \(unavailable.map(\.rawValue))")
+    }
+
     @Test("The free history window is generous enough to cover a tax year")
     func historyWindow() {
         let free = Entitlements()

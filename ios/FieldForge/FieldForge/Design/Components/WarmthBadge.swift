@@ -126,7 +126,7 @@ struct WarmthPicker: View {
             .frame(maxWidth: .infinity)
             .frame(minHeight: 64)
             .padding(.vertical, Space.sm)
-            .foregroundStyle(isSelected ? .white : option.tint)
+            .foregroundStyle(isSelected ? option.onTintColor : option.tint)
             .background(
                 isSelected ? option.tint : option.tint.opacity(0.12),
                 in: RoundedRectangle(cornerRadius: Space.cornerSmall, style: .continuous)
@@ -139,56 +139,79 @@ struct WarmthPicker: View {
     }
 }
 
-/// Map annotation. Bigger than a system pin because it has to be hittable while
-/// walking, and glyph-bearing so the scale survives a colour-blind user and
-/// direct sunlight.
+/// Map annotation.
+///
+/// Sized and weighted for the actual conditions: held at arm's length, in
+/// direct sun, by somebody walking. That means bigger than a system pin (also
+/// so it is hittable), a glyph rather than colour alone, and — the part that
+/// matters most outdoors — a hard shadow so the pin separates from map tiles
+/// even when the screen is washed out and the colour has gone flat.
 struct WarmthMapPin: View {
     let warmth: Warmth
     let isSelected: Bool
     var hasOpenFollowUp: Bool = false
 
+    private var diameter: CGFloat { isSelected ? 44 : 34 }
+
     var body: some View {
         ZStack {
             Circle()
                 .fill(warmth.tint)
-                .frame(width: isSelected ? 40 : 30, height: isSelected ? 40 : 30)
-                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+                .frame(width: diameter, height: diameter)
+                // Two shadows: a tight dark one for edge definition in sunlight,
+                // and a wider soft one so the pin still reads against a busy
+                // map. A single soft shadow disappears outdoors.
+                .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
+                .shadow(color: .black.opacity(0.22), radius: 5, y: 2)
 
             Image(systemName: warmth.symbolName)
-                .font(.system(size: isSelected ? 18 : 13, weight: .bold))
-                .foregroundStyle(.white)
+                .font(.system(size: isSelected ? 21 : 16, weight: .heavy))
+                .foregroundStyle(warmth.onTintColor)
 
             if hasOpenFollowUp {
                 Circle()
                     .fill(Palette.caution)
-                    .frame(width: 11, height: 11)
-                    .overlay(Circle().strokeBorder(Palette.surface, lineWidth: 1.5))
-                    .offset(x: 13, y: -13)
+                    .frame(width: 13, height: 13)
+                    .overlay(Circle().strokeBorder(Palette.surface, lineWidth: 2))
+                    .offset(x: diameter / 2 - 3, y: -diameter / 2 + 3)
             }
         }
         .overlay(
+            // A white halo separates the pin from the map beneath it. Kept
+            // white in both appearances deliberately: the map is light in light
+            // mode and dark in dark mode, and a white ring is the one that
+            // works against both, which is why every mapping app uses it.
             Circle()
-                .strokeBorder(.white.opacity(0.9), lineWidth: 2)
-                .frame(width: isSelected ? 40 : 30, height: isSelected ? 40 : 30)
+                .strokeBorder(.white.opacity(0.95), lineWidth: 2.5)
+                .frame(width: diameter, height: diameter)
         )
         .accessibilityLabel(warmth.accessibilityDescription)
         .accessibilityValue(hasOpenFollowUp ? "Has an open follow-up" : "")
     }
 }
 
-#Preview("Warmth") {
-    @Previewable @State var warmth: Warmth = .warm
-    VStack(alignment: .leading, spacing: Space.lg) {
-        HStack {
-            ForEach(Warmth.allCases) { WarmthBadge(warmth: $0, size: .compact) }
+/// Preview host. A plain view rather than `@Previewable`, which is an Xcode 16
+/// macro — the project targets iOS 17 and should build on Xcode 15 too.
+private struct WarmthPreviewHost: View {
+    @State private var warmth: Warmth = .warm
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            HStack {
+                ForEach(Warmth.allCases) { WarmthBadge(warmth: $0, size: .compact) }
+            }
+            WarmthPicker(warmth: $warmth)
+            HStack(spacing: Space.md) {
+                WarmthMapPin(warmth: .champion, isSelected: true, hasOpenFollowUp: true)
+                WarmthMapPin(warmth: .cool, isSelected: false)
+                WarmthMapPin(warmth: .doNotReturn, isSelected: false)
+            }
         }
-        WarmthPicker(warmth: $warmth)
-        HStack(spacing: Space.md) {
-            WarmthMapPin(warmth: .champion, isSelected: true, hasOpenFollowUp: true)
-            WarmthMapPin(warmth: .cool, isSelected: false)
-            WarmthMapPin(warmth: .doNotReturn, isSelected: false)
-        }
+        .padding()
+        .background(Palette.background)
     }
-    .padding()
-    .background(Palette.background)
+}
+
+#Preview("Warmth") {
+    WarmthPreviewHost()
 }

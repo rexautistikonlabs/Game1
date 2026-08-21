@@ -21,7 +21,11 @@ struct TeamView: View {
     @Environment(\.appEnvironment) private var app
     @Environment(\.modelContext) private var context
 
-    @Query(sort: \Contact.nameSortKey) private var contacts: [Contact]
+    @Query(
+        filter: #Predicate<Contact> { $0.isArchived == false },
+        sort: \Contact.nameSortKey
+    )
+    private var contacts: [Contact]
     @Query(sort: \SharedContactProjection.updatedAt, order: .reverse)
     private var projections: [SharedContactProjection]
 
@@ -47,6 +51,7 @@ struct TeamView: View {
                     activeSection
                     sharedContactsSection
                     teamOnlySection
+                    notYetSection
                 case .unavailable(let reason):
                     Section {
                         InlineBanner(kind: .caution, message: reason)
@@ -254,6 +259,31 @@ struct TeamView: View {
         }
     }
 
+    /// What the team feature does not do yet.
+    ///
+    /// Stated on the screen rather than only in a changelog: a coordinator
+    /// deciding whether to move their volunteers onto this needs to know what
+    /// is missing before they commit, not after.
+    private var notYetSection: some View {
+        Section {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Assigning follow-ups to a teammate")
+                        .font(Type.body)
+                    Text("Warmth, notes and giving history sync today. Handing a specific follow-up to a named colleague needs the reminder itself to travel, which is not built yet — so the control is not shown rather than being shown and doing nothing.")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } icon: {
+                Image(systemName: "hourglass")
+                    .foregroundStyle(Palette.textSecondary)
+            }
+        } header: {
+            Text("Not yet")
+        }
+    }
+
     // MARK: What is shared
 
     private var sharedContacts: [Contact] {
@@ -310,7 +340,7 @@ struct TeamView: View {
     // MARK: What the team knows that you do not
 
     private var teamOnly: [SharedContactProjection] {
-        service.teamOnlyProjections()
+        service.teamOnlyContacts
     }
 
     @ViewBuilder
@@ -366,8 +396,8 @@ struct TeamView: View {
                             .font(Type.label)
                             .textCase(.uppercase)
                             .foregroundStyle(Palette.caution)
-                        ForEach(SharedContactProjection.Key.all, id: \.self) { key in
-                            Text("· \(Self.friendlyFieldName(key))")
+                        ForEach(Self.disclosedFieldNames, id: \.self) { name in
+                            Text("· \(name)")
                                 .font(Type.caption)
                                 .foregroundStyle(Palette.textPrimary)
                         }
@@ -392,6 +422,21 @@ struct TeamView: View {
             .tint(Palette.brand)
         } footer: {
             Text("The list above is generated from the code that builds the shared record, not written by hand, so it cannot drift out of date.")
+        }
+    }
+
+    /// Every shared field, in plain language, de-duplicated and in the record's
+    /// own order.
+    ///
+    /// Derived from `Key.all` rather than hand-written, so a new field added to
+    /// the projection appears here automatically — that is the property that
+    /// keeps this list honest. Deduplicated because several keys describe one
+    /// human-visible thing: latitude and longitude are both "the map pin".
+    static var disclosedFieldNames: [String] {
+        var seen = Set<String>()
+        return SharedContactProjection.Key.all.compactMap { key in
+            let name = friendlyFieldName(key)
+            return seen.insert(name).inserted ? name : nil
         }
     }
 

@@ -27,21 +27,14 @@ struct ContactDetailView: View {
 
     var body: some View {
         ScrollView {
+            // Grouped in three, deliberately. `ViewBuilder` only has overloads
+            // up to ten children and this screen has more than that; the groups
+            // also happen to match how the screen is read — who they are, then
+            // what has happened, then the record's own settings.
             VStack(alignment: .leading, spacing: Space.lg) {
-                header
-                if contact.isDoNotContact { doNotContactBanner }
-                quickActions
-                if let scheduledConfirmation {
-                    InlineBanner(kind: .positive, message: scheduledConfirmation)
-                }
-                warmthCard
-                teamCard
-                if !openFollowUps.isEmpty { followUpsSection }
-                givingSection
-                visitsSection
-                documentsSection
-                notesSection
-                adminSection
+                identityGroup
+                historyGroup
+                recordGroup
             }
             .padding(.horizontal, Space.screenEdge)
             .padding(.bottom, Space.xxl)
@@ -60,6 +53,38 @@ struct ContactDetailView: View {
         .sheet(isPresented: $isPresentingFollowUp) {
             FollowUpEditorView(contact: contact)
         }
+    }
+
+    // MARK: Groups
+
+    /// Who this is, how to reach them, and the current read on them.
+    @ViewBuilder
+    private var identityGroup: some View {
+        header
+        if contact.isDoNotContact { doNotContactBanner }
+        quickActions
+        if let scheduledConfirmation {
+            InlineBanner(kind: .positive, message: scheduledConfirmation)
+        }
+        warmthCard
+        teamCard
+    }
+
+    /// What has happened: what is owed, what they gave, when we called.
+    @ViewBuilder
+    private var historyGroup: some View {
+        if !openFollowUps.isEmpty { followUpsSection }
+        givingSection
+        visitsSection
+        documentsSection
+    }
+
+    /// Notes and the record's own settings, last because they are the least
+    /// urgent thing on a doorstep.
+    @ViewBuilder
+    private var recordGroup: some View {
+        notesSection
+        adminSection
     }
 
     // MARK: Header
@@ -444,7 +469,7 @@ struct ContactDetailView: View {
                     Toggle(isOn: Binding(
                         get: { contact.isSharedWithTeam },
                         set: { newValue in
-                            SyncEngine.markShared(contact, isShared: newValue)
+                            contact.setSharedWithTeam(newValue)
                             try? context.save()
                             if newValue {
                                 app.projectToTeam(contact)

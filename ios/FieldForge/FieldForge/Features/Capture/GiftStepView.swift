@@ -11,7 +11,10 @@
 //  never have to scroll past something that cannot work.
 //
 
+import PhotosUI
+import SwiftData
 import SwiftUI
+import UIKit
 
 struct GiftStepView: View {
 
@@ -19,9 +22,18 @@ struct GiftStepView: View {
 
     @Environment(\.appEnvironment) private var app
 
+    @Environment(\.modelContext) private var context
+
     @State private var paymentError: String?
     @State private var showsAdvanced = false
     @State private var isTakingPayment = false
+    @State private var isPresentingCamera = false
+    @State private var isPresentingPhotoPicker = false
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var cameraUnavailableMessage: String?
+    /// Attachments created on this screen, so the strip can show them without
+    /// a fetch on every keystroke.
+    @State private var itemPhotos: [Attachment] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
@@ -58,6 +70,21 @@ struct GiftStepView: View {
             }
 
             advancedSection
+        }
+        .task { reloadItemPhotos() }
+        .sheet(isPresented: $isPresentingCamera) {
+            ItemCameraView { data in
+                savePhoto(data)
+            }
+            .ignoresSafeArea()
+        }
+        .photosPicker(isPresented: $isPresentingPhotoPicker, selection: $pickedPhoto, matching: .images)
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            Task {
+                await loadPickedPhoto(item)
+                pickedPhoto = nil
+            }
         }
     }
 
@@ -114,11 +141,214 @@ struct GiftStepView: View {
                 message: "The letter will describe the items but will not state a value. Valuing a donated item is the donor's job, not the charity's — that is what the IRS expects."
             )
 
-            Text("A photo of the items makes the record much stronger. Add one from the donor's record after saving.")
-                .font(Type.caption)
-                .foregroundStyle(Palette.textSecondary)
+            inKindPhotoStrip
         }
         .cardSurface()
+    }
+
+    // MARK: In-kind photographs
+
+    /// Photograph the goods, right here.
+    ///
+    /// The photographs are saved to the store the instant they are taken, not
+    /// held in view state — a picture of a pallet of donated food is the one
+    /// thing on this screen that cannot be reconstructed if the app dies. The
+    /// draft only carries their ids, and `DraftCommitter` links them to the
+    /// gift at commit time.
+    @ViewBuilder
+    private var inKindPhotoStrip: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack {
+                Text("Photos of the items")
+                    .font(Type.label)
+                    .textCase(.uppercase)
+                    .foregroundStyle(Palette.textSecondary)
+                Spacer()
+                if !itemPhotos.isEmpty {
+                    Text("\(itemPhotos.count)")
+                        .font(Type.caption.weight(.semibold))
+                        .foregroundStyle(Palette.textSecondary)
+                        .monospacedDigit()
+                }
+            }
+
+            if let cameraUnavailableMessage {
+                InlineBanner(kind: .caution, message: cameraUnavailableMessage)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.sm) {
+                    Button {
+                        presentCamera()
+                    } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: "camera.fill")
+                                .font(.title3)
+                            Text("Photo")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .frame(width: 74, height: 74)
+                        .foregroundStyle(Palette.onAccent)
+                        .background(Palette.brand, in: RoundedRectangle(cornerRadius: Space.cornerSmall, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Photograph the donated items")
+
+                    Button {
+                        isPresentingPhotoPicker = true
+                    } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: "photo.on.rectangle")
+                                .font(.title3)
+                            Text("Library")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .frame(width: 74, height: 74)
+                        .foregroundStyle(Palette.brand)
+                        .background(Palette.brandMuted, in: RoundedRectangle(cornerRadius: Space.cornerSmall, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Choose a photo you already took")
+
+                    ForEach(itemPhotos) { attachment in
+                        photoThumbnail(attachment)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            if itemPhotos.isEmpty {
+                Text("A photograph makes an in-kind acknowledgment far more convincing, and it is the part nobody can reconstruct later.")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textSecondary)
+            } else if app.activeOrganization()?.includesInKindPhotosInLetter == true {
+                Label("These will print in the acknowledgment letter.", systemImage: "doc.richtext")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.positive)
+            } else {
+                Label(
+                    "Saved to the record. Turn on “Include in-kind photos in letters” in Settings to print them.",
+                    systemImage: "info.circle"
+                )
+                .font(Type.caption)
+                .foregroundStyle(Palette.textSecondary)
+            }
+        }
+    }
+
+    private func photoThumbnail(_ attachment: Attachment) -> some View {
+        ZStack(alignment: .topTrailing) {
+            if let image = attachment.thumbnail {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 74, height: 74)
+                    .clipShape(RoundedRectangle(cornerRadius: Space.cornerSmall, style: .continuous))
+            } else {
+                RoundedRectangle(cornerRadius: Space.cornerSmall, style: .continuous)
+                    .fill(Palette.background)
+                    .frame(width: 74, height: 74)
+                    .overlay(Image(systemName: "photo").foregroundStyle(Palette.textTertiary))
+            }
+
+            Button {
+                remove(attachment)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.body)
+                    .foregroundStyle(.white, .black.opacity(0.55))
+                    .padding(3)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remove this photo")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Photo of the donated items")
+    }
+
+    // MARK: Photo actions
+
+    private func presentCamera() {
+        guard ItemCameraView.isAvailable else {
+            cameraUnavailableMessage = "This device has no camera. Choose a photo from your library instead."
+            return
+        }
+        guard !ItemCameraView.isPermissionDenied else {
+            cameraUnavailableMessage = "Camera access is off for FieldForge. Turn it on in Settings, or choose a photo from your library."
+            return
+        }
+        cameraUnavailableMessage = nil
+        isPresentingCamera = true
+    }
+
+    /// Saves immediately. See the note on `inKindPhotoStrip` for why.
+    private func savePhoto(_ data: Data) {
+        let attachment = Attachment(
+            kind: .inKindItem,
+            data: data,
+            caption: draft.inKindDescription.trimmedOrNil ?? ""
+        )
+        attachment.isCapturedLive = true
+        attachment.latitude = draft.latitude
+        attachment.longitude = draft.longitude
+        // The donor's stated value travels with the photo, so a caption in the
+        // letter can attribute it to them rather than to the charity.
+        attachment.donorEstimatedValueMinorUnits = draft.donorEstimatedValue.minorUnits
+        attachment.generateThumbnail()
+        context.insert(attachment)
+
+        do {
+            try context.save()
+            draft.attachmentIDs.append(attachment.id)
+            draft.touch()
+            itemPhotos.append(attachment)
+            Haptics.success()
+        } catch {
+            AppLog.capture.error("Could not save an in-kind photo: \(error.localizedDescription, privacy: .public)")
+            context.rollback()
+            cameraUnavailableMessage = "That photo could not be saved. Please try again."
+        }
+    }
+
+    private func remove(_ attachment: Attachment) {
+        Haptics.selection()
+        draft.attachmentIDs.removeAll { $0 == attachment.id }
+        itemPhotos.removeAll { $0.id == attachment.id }
+        context.delete(attachment)
+        try? context.save()
+        draft.touch()
+    }
+
+    private func loadPickedPhoto(_ item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let image = UIImage(data: data) else {
+            cameraUnavailableMessage = "That photo could not be opened."
+            return
+        }
+        // Same downscale as the camera path, so a library original does not
+        // arrive at twelve megapixels.
+        guard let jpeg = ItemCameraView.Coordinator.downscaledJPEG(
+            image,
+            maximumDimension: 1600,
+            quality: 0.75
+        ) else { return }
+        savePhoto(jpeg)
+    }
+
+    /// Reloads the strip from the draft, so photos survive leaving and
+    /// re-entering the step.
+    private func reloadItemPhotos() {
+        let ids = draft.attachmentIDs
+        guard !ids.isEmpty else {
+            itemPhotos = []
+            return
+        }
+        let descriptor = FetchDescriptor<Attachment>(
+            predicate: #Predicate { ids.contains($0.id) },
+            sortBy: [SortDescriptor(\.capturedAt)]
+        )
+        itemPhotos = ((try? context.fetch(descriptor)) ?? [])
+            .filter { $0.kind == .inKindItem || $0.kind == .photo }
     }
 
     // MARK: Method

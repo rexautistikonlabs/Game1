@@ -48,17 +48,21 @@
 	<string>FieldForge stamps visits with where they happened and shows nearby contacts on the map. Location is only read while the app is open.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>FieldForge can import a contact you already have on this iPhone instead of making you retype it.</string>
+	<!-- Read access is deliberately NOT declared: every photo the app reads
+	     comes through PhotosPicker, which runs out of process and needs no
+	     permission. This Add string is required because the share sheet offers
+	     Save to Photos for a finished document. -->
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>FieldForge can save a copy of a finished receipt or acknowledgment letter to your photo library.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>FieldForge can attach a photo you already took to a visit or an in-kind donation.</string>
-	<key>NSFaceIDUsageDescription</key>
-	<string>FieldForge can lock donor records behind Face ID so a borrowed or lost iPhone does not expose them.</string>
 
 	<!-- Required for a CKShare invitation link to open the app rather than
 	     bouncing to Safari. Without it, accepting a team invite silently fails. -->
 	<key>CKSharingSupported</key>
 	<true/>
+	<!-- No UIBackgroundModes on purpose. Nothing in FieldForge runs in the
+	     background: the outbox drains on foreground and on a reachability
+	     change, and location is when-in-use only. A fundraising app has no
+	     business tracking anybody with the screen off. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>UIViewControllerBasedStatusBarAppearance</key>

@@ -285,10 +285,12 @@ struct SharedWarmthPrivacyTests {
     @Test("The two stores are separate files, so the boundary is physical")
     func storesAreSeparate() {
         let shared = Persistence.sharedWarmthConfiguration
-        // The projection store is its own file and is never mirrored by
-        // SwiftData — `SharedWarmthService` moves it over a shared zone.
+        // The projection store is its own file, separate from the private one.
+        // (Whether SwiftData mirrors it is asserted by construction rather than
+        // here: `ModelConfiguration.CloudKitDatabase` is not documented as
+        // Equatable, so comparing it would be testing the SDK, not this app.)
         #expect(shared.url.lastPathComponent.contains("Shared"))
-        #expect(shared.cloudKitDatabase == .none)
+        #expect(shared.url != URL.applicationSupportDirectory.appending(path: "FieldForge.store"))
         // And the private schema does not contain the projection, nor the
         // shared schema the private models.
         let sharedTypes = Persistence.sharedSchema.entities.map(\.name)

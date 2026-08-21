@@ -147,20 +147,20 @@ struct LetterRenderer {
     /// efficient of the four, which matters on a letter that runs long.
     private func drawSplitLetterhead(_ canvas: PDFCanvas) {
         let topY = canvas.contentRect.minY
-        var textTop = topY
 
         if let logo = content.logo {
             canvas.moveCursor(to: topY)
-            let rect = canvas.drawImage(
+            canvas.drawImage(
                 logo,
                 maxSize: CGSize(width: 150, height: 50),
                 x: canvas.contentRect.minX,
                 advancesCursor: false
             )
-            textTop = topY
-            _ = rect
         }
 
+        // The text block sits at the same top edge as the logo, right-aligned,
+        // which is what makes this the "split" style.
+        let textTop = topY
         var rightStyle = letterheadStyle
         rightStyle.alignment = .right
         var lines = content.organizationAddressLines

@@ -362,7 +362,7 @@ private struct StepIndicator: View {
                             if isPast {
                                 Image(systemName: "checkmark")
                                     .font(.caption2.weight(.bold))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(Palette.onAccent)
                             } else {
                                 Image(systemName: step.symbol)
                                     .font(.caption2.weight(.semibold))

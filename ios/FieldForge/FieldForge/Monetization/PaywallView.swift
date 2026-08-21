@@ -169,7 +169,9 @@ struct PaywallView: View {
     }
 
     private var paidFeatures: [Feature] {
-        Feature.allCases.filter { !$0.isFree }
+        // Available only: selling something that does not exist yet is the one
+        // thing a paywall must never do.
+        Feature.allCases.filter { !$0.isFree && $0.isAvailable }
     }
 
     // MARK: Plans

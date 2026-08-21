@@ -3,6 +3,18 @@ import { db } from '../db/db'
 import { useApp } from './useApp'
 import type { Client, Company, Document, Expense } from '../types'
 
+/**
+ * Reads an app-level setting reactively, so a value written anywhere in the app
+ * updates every reader without a page reload. Returns `undefined` until the
+ * first read resolves, which callers can use to avoid a flash of stale UI.
+ */
+export function useSetting<T>(key: string, fallback: T): T | undefined {
+  return useLiveQuery(async () => {
+    const row = await db.settings.get(key)
+    return row === undefined ? fallback : (row.value as T)
+  }, [key])
+}
+
 /** Every company in the switcher, oldest first so the order never jumps around. */
 export function useCompanies(): Company[] | undefined {
   return useLiveQuery(() => db.companies.orderBy('createdAt').toArray(), [])

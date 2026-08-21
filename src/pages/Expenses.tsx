@@ -19,6 +19,7 @@ import { PageHeader } from '../components/PageHeader'
 import { ScanIllustration, SearchIllustration } from '../components/ui/Illustrations'
 import { ScanImportDialog } from '../components/ScanImportDialog'
 import { SearchInput, Segmented } from '../components/ui/SearchInput'
+import { ListSkeleton } from '../components/ui/Skeleton'
 import { useConfirm } from '../components/ui/Confirm'
 import { db } from '../db/db'
 import { formatDate, formatMoney, monthLabel, monthStart, today, yearStart } from '../lib/format'
@@ -73,7 +74,7 @@ export function Expenses() {
     })
   }, [expenses, search, periodStart, category])
 
-  if (!company || !expenses || !documents) return null
+  if (!company || !expenses || !documents) return <ListSkeleton label="Loading expenses" />
 
   const filteredTotal = filtered.reduce((sum, expense) => sum + expense.total, 0)
   const filteredTax = filtered.reduce((sum, expense) => sum + expense.taxAmount, 0)

@@ -1,5 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { CommandPalette } from './components/CommandPalette'
+import { ShortcutsDialog } from './components/ShortcutsDialog'
 import { TopBar } from './components/TopBar'
 import { Toaster } from './components/ui/Toaster'
 import { Dashboard } from './pages/Dashboard'
@@ -13,6 +15,7 @@ import { Welcome } from './pages/Welcome'
 import { useApp } from './store/useApp'
 import { useActiveCompany, useCompanies } from './store/useCompanyData'
 import { onDesktopMenu } from './lib/download'
+import { useShortcuts, type Shortcut } from './lib/shortcuts'
 import { withAlpha, readableOn } from './lib/format'
 import type { DocumentKind } from './types'
 
@@ -58,9 +61,26 @@ export function App() {
   const ready = useApp((s) => s.ready)
   const init = useApp((s) => s.init)
   const companies = useCompanies()
+  const navigate = useNavigate()
+
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
 
   useBrandTheme()
   useDesktopMenu()
+
+  // A stable array, so the listener is bound once rather than every render.
+  const shortcuts = useMemo<Shortcut[]>(
+    () => [
+      { key: 'k', mod: true, run: () => setPaletteOpen((v) => !v) },
+      { key: 'n', mod: true, run: () => navigate('/invoices/new') },
+      { key: 'n', mod: true, shift: true, run: () => navigate('/receipts/new') },
+      { key: 'i', mod: true, run: () => navigate('/expenses?import=1') },
+      { key: '?', run: () => setShortcutsOpen(true) },
+    ],
+    [navigate],
+  )
+  useShortcuts(shortcuts, ready)
 
   useEffect(() => {
     void init()
@@ -68,7 +88,7 @@ export function App() {
 
   if (!ready || companies === undefined) {
     return (
-      <div className="flex h-full items-center justify-center">
+      <div className="flex h-full items-center justify-center" role="status" aria-busy="true">
         <div className="flex flex-col items-center gap-3">
           <div
             className="h-9 w-9 animate-spin rounded-full border-[3px] border-[color:var(--border)]"
@@ -93,8 +113,21 @@ export function App() {
 
   return (
     <div className="flex min-h-full flex-col">
-      <TopBar />
-      <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-7 sm:px-6">
+      {/* A 3px strip in the active company's colour: on a phone, where the
+          switcher is compressed, this is the clearest "which books am I in". */}
+      <div
+        className="no-print h-[3px] w-full shrink-0"
+        style={{ background: 'var(--brand)' }}
+        aria-hidden
+      />
+      <a
+        href="#main"
+        className="no-print sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-[color:var(--surface)] focus:px-4 focus:py-2 focus:shadow-pop"
+      >
+        Skip to content
+      </a>
+      <TopBar onOpenPalette={() => setPaletteOpen(true)} />
+      <main id="main" className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-7 sm:px-6">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/invoices" element={<Documents kind="invoice" />} />
@@ -109,6 +142,8 @@ export function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <Toaster />
     </div>
   )

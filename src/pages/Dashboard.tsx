@@ -14,6 +14,8 @@ import { DocumentRow, DocumentRowHeader } from '../components/DocumentRow'
 import { EmptyState } from '../components/ui/EmptyState'
 import { InvoiceIllustration } from '../components/ui/Illustrations'
 import { PageHeader } from '../components/PageHeader'
+import { SampleDataTip } from '../components/SampleDataTip'
+import { DashboardSkeleton } from '../components/ui/Skeleton'
 import {
   computeTotals,
   formatDate,
@@ -31,7 +33,7 @@ export function Dashboard() {
   const expenses = useExpenses()
   const navigate = useNavigate()
 
-  if (!company || !documents || !expenses) return null
+  if (!company || !documents || !expenses) return <DashboardSkeleton />
 
   const currency = company.currency
   const startOfMonth = monthStart()
@@ -63,6 +65,8 @@ export function Dashboard() {
         title={`Hello — ${company.name}`}
         subtitle={`Here is where things stand in ${monthLabel(today())}.`}
       />
+
+      <SampleDataTip />
 
       {/* ---- The three actions people actually came here for ---- */}
       <div className="mb-7 grid grid-cols-1 gap-3 sm:grid-cols-3">

@@ -22,6 +22,7 @@ import { CompanyForm } from '../components/CompanyForm'
 import { Modal } from '../components/ui/Modal'
 import { PageHeader } from '../components/PageHeader'
 import { Segmented } from '../components/ui/SearchInput'
+import { CardsSkeleton } from '../components/ui/Skeleton'
 import { useConfirm } from '../components/ui/Confirm'
 import { db, deleteCompanyCascade } from '../db/db'
 import { backupFilename, createBackup, restoreBackup } from '../lib/backup'
@@ -62,7 +63,7 @@ export function Settings() {
     // deep link arrives, not when the handlers below are re-created.
   }, [searchParams])
 
-  if (!companies || !active) return null
+  if (!companies || !active) return <CardsSkeleton cards={2} label="Loading settings" />
 
   const saveCompany = async (company: Company) => {
     const isNew = !companies.some((c) => c.id === company.id)

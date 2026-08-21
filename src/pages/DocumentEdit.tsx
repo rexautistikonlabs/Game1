@@ -9,6 +9,7 @@ import { Field, Input, MoneyInput, Select, Textarea } from '../components/ui/Inp
 import { LineItemsEditor } from '../components/LineItemsEditor'
 import { Segmented } from '../components/ui/SearchInput'
 import { SheetPreview } from '../components/SheetPreview'
+import { EditorSkeleton } from '../components/ui/Skeleton'
 import { claimNextNumber, db, newId } from '../db/db'
 import { addDays, computeTotals, currencySymbol, formatMoney, today } from '../lib/format'
 import { useApp } from '../store/useApp'
@@ -140,7 +141,7 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
     [draft],
   )
 
-  if (!company || !clients || !draft) return null
+  if (!company || !clients || !draft) return <EditorSkeleton />
 
   const isNew = !id
   const isInvoice = draft.kind === 'invoice'

@@ -9,6 +9,7 @@ import { ExportDialog } from '../components/ExportDialog'
 import { InvoiceIllustration, ReceiptIllustration, SearchIllustration } from '../components/ui/Illustrations'
 import { PageHeader } from '../components/PageHeader'
 import { SearchInput, Segmented } from '../components/ui/SearchInput'
+import { ListSkeleton } from '../components/ui/Skeleton'
 import { computeTotals, displayStatus, formatMoney } from '../lib/format'
 import { useActiveCompany, useDocuments, useExpenses } from '../store/useCompanyData'
 import type { DocumentKind } from '../types'
@@ -75,7 +76,8 @@ export function Documents({ kind }: { kind: DocumentKind }) {
     })
   }, [documents, search, status])
 
-  if (!company || !documents || !allDocuments || !expenses) return null
+  if (!company || !documents || !allDocuments || !expenses)
+    return <ListSkeleton label={`Loading ${copy.title.toLowerCase()}`} />
 
   const filteredTotal = filtered.reduce((sum, doc) => sum + computeTotals(doc).total, 0)
   const statusOptions: { value: StatusFilter; label: string; count: number }[] = [

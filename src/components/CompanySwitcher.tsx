@@ -57,6 +57,7 @@ export function CompanySwitcher() {
 
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -64,7 +65,21 @@ export function CompanySwitcher() {
       if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
     }
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
+      if (event.key === 'Escape') {
+        setOpen(false)
+        triggerRef.current?.focus()
+        return
+      }
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+      const options = [
+        ...(containerRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []),
+      ]
+      if (!options.length) return
+      event.preventDefault()
+      const current = options.indexOf(document.activeElement as HTMLElement)
+      const step = event.key === 'ArrowDown' ? 1 : -1
+      const next = current === -1 ? (step === 1 ? 0 : options.length - 1) : current + step
+      options[(next + options.length) % options.length]?.focus()
     }
     document.addEventListener('mousedown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
@@ -87,9 +102,11 @@ export function CompanySwitcher() {
   return (
     <div ref={containerRef} className="relative min-w-0">
       <button
+        ref={triggerRef}
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-label={`Active company: ${active.name}. Switch company`}
         className={cn(
           'flex items-center gap-2.5 rounded-xl py-1.5 pl-1.5 pr-2.5 text-left transition',
           'hover:bg-black/5 dark:hover:bg-white/10',

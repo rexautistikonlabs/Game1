@@ -2,6 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   FileText,
   LayoutDashboard,
+  Search,
   Moon,
   Plus,
   Receipt,
@@ -15,6 +16,7 @@ import { CompanySwitcher } from './CompanySwitcher'
 import { Button } from './ui/Button'
 import { useApp } from '../store/useApp'
 import { cn } from '../lib/cn'
+import { shortcutLabel } from '../lib/shortcuts'
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -25,7 +27,7 @@ const NAV_ITEMS = [
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]
 
-export function TopBar() {
+export function TopBar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const navigate = useNavigate()
   const theme = useApp((s) => s.theme)
   const setTheme = useApp((s) => s.setTheme)
@@ -53,11 +55,22 @@ export function TopBar() {
         <CompanySwitcher />
 
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          <button
+            onClick={onOpenPalette}
+            className="hidden items-center gap-2 rounded-lg border px-2.5 py-1.5 text-[13px] text-[color:var(--text-muted)] transition hover:border-[color:var(--text-subtle)] hover:text-[color:var(--text)] md:flex"
+            aria-label={`Search and jump to anything (${shortcutLabel({ key: 'k', mod: true })})`}
+          >
+            <Search className="h-3.5 w-3.5" aria-hidden />
+            Search
+            <kbd className="rounded border px-1 py-px font-sans text-[11px]">
+              {shortcutLabel({ key: 'k', mod: true })}
+            </kbd>
+          </button>
           <Button
             variant="ghost"
             size="sm"
             onClick={() => navigate('/expenses?import=1')}
-            className="hidden sm:inline-flex"
+            className="hidden lg:inline-flex"
           >
             <ScanLine className="h-4 w-4" aria-hidden />
             Import scan
@@ -78,7 +91,7 @@ export function TopBar() {
         </div>
       </div>
 
-      <nav className="mx-auto max-w-[1400px] px-2 sm:px-4">
+      <nav aria-label="Main" className="mx-auto max-w-[1400px] px-2 sm:px-4">
         <ul className="flex items-center gap-0.5 overflow-x-auto">
           {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
             <li key={to}>

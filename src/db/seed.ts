@@ -3,6 +3,7 @@ import { addDays, today } from '../lib/format'
 import type { Client, Company, Document, Expense, LineItem } from '../types'
 
 const SEED_FLAG = 'seeded'
+export const SAMPLE_TIP_FLAG = 'sampleTip'
 
 /** Inline SVG logos keep the sample companies self-contained — no image files. */
 function logoDataUrl(text: string, background: string, foreground = '#ffffff'): string {
@@ -468,6 +469,9 @@ async function runSeed(): Promise<void> {
     await db.expenses.bulkAdd(expenses)
     await setSetting(SEED_FLAG, true)
     await setSetting('activeCompanyId', nonprofit.id)
+    // Tells the dashboard to explain that these two companies are examples.
+    // Dismissing it (or resetting the demo data) flips this.
+    await setSetting(SAMPLE_TIP_FLAG, true)
   })
 }
 

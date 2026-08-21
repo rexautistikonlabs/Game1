@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Download, FileText, Mail, Pencil, Phone, Plus, Trash2 } from 'lucide-react'
 import { Button, IconButton } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
@@ -9,6 +9,7 @@ import { Field, Input, Textarea } from '../components/ui/Input'
 import { Modal } from '../components/ui/Modal'
 import { PageHeader } from '../components/PageHeader'
 import { SearchInput } from '../components/ui/SearchInput'
+import { CardsSkeleton } from '../components/ui/Skeleton'
 import { useConfirm } from '../components/ui/Confirm'
 import { db, newId } from '../db/db'
 import { clientsToCsv } from '../lib/csv'
@@ -24,12 +25,23 @@ export function Clients() {
   const clients = useClients()
   const documents = useDocuments()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const toast = useApp((s) => s.toast)
   const { confirm, dialog } = useConfirm()
 
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState<Client | null>(null)
   const [open, setOpen] = useState(false)
+
+  // The command palette links here with ?new=1 to open the form directly.
+  useEffect(() => {
+    if (!searchParams.get('new')) return
+    setEditing(null)
+    setOpen(true)
+    const next = new URLSearchParams(searchParams)
+    next.delete('new')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -42,7 +54,7 @@ export function Clients() {
     )
   }, [clients, search])
 
-  if (!company || !clients || !documents) return null
+  if (!company || !clients || !documents) return <CardsSkeleton label="Loading clients" />
 
   /** How much this client has been billed, and how much is still owed. */
   const stats = (client: Client) => {

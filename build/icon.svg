@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#1737a8"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <!-- A receipt with a torn bottom edge: the app's one idea, in one shape. -->
+  <path d="M288 216h400a56 56 0 0 1 56 56v520l-64-44-64 44-64-44-64 44-64-44-64 44-64-44-64 44V272a56 56 0 0 1 56-56Z" fill="#fff"/>
+  <path d="M368 372h288M368 476h288M368 580h176" stroke="#2563eb" stroke-width="42" stroke-linecap="round"/>
+</svg>

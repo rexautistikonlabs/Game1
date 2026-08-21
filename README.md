@@ -45,6 +45,9 @@ Targets are configured in `electron-builder.yml`: DMG + ZIP on macOS, NSIS + por
 Windows, AppImage + deb on Linux. Building for a platform other than your own needs that
 platform's toolchain, so run the build on the OS you are targeting (or in CI).
 
+**See [BUILD.md](BUILD.md)** for per-platform toolchains, signing and notarization, the
+pitfalls worth knowing in advance, how to test an installer, and what the production CSP does.
+
 ### Other commands
 
 | Command | What it does |

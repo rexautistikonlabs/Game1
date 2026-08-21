@@ -3,7 +3,10 @@
   "private": true,
   "version": "1.0.0",
   "description": "SimpleBooks — the simplest receipt & invoice bookkeeping app. Offline-first desktop app for multiple companies.",
-  "author": "SimpleBooks",
+  "author": {
+    "name": "SimpleBooks",
+    "email": "maintainer@simplebooks.invalid"
+  },
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
@@ -52,5 +55,6 @@
     "vite": "^6.0.7",
     "vitest": "^4.1.11",
     "wait-on": "^8.0.1"
-  }
+  },
+  "homepage": "https://github.com/rexautistikonlabs/Game1"
 }

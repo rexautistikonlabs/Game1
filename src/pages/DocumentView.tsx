@@ -2,20 +2,24 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
+  CalendarPlus,
   CheckCircle2,
   Copy,
   Download,
   Mail,
   Pencil,
   Printer,
+  Repeat,
   Send,
   Trash2,
 } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
+import { Chip } from '../components/ui/Badge'
 import { DocumentSheet } from '../components/DocumentSheet'
 import { EmailDialog } from '../components/EmailDialog'
 import { SheetPreview } from '../components/SheetPreview'
+
 import { StatusBadge } from '../components/ui/Badge'
 import { useConfirm } from '../components/ui/Confirm'
 import { db } from '../db/db'
@@ -29,9 +33,10 @@ import {
   today,
 } from '../lib/format'
 import { generatePdfBlob, pdfFilename, printDocument } from '../lib/pdf'
+import { generateNext, isDue, seriesMembers } from '../lib/recurrence'
 import { useApp } from '../store/useApp'
 import { useActiveCompany, useDocument } from '../store/useCompanyData'
-import type { DocumentStatus } from '../types'
+import { RECURRENCE_LABELS, type Document, type DocumentStatus } from '../types'
 
 /**
  * The finished document, exactly as it will print, with every action it
@@ -48,12 +53,29 @@ export function DocumentView() {
   const sheetRef = useRef<HTMLDivElement>(null)
   const [emailOpen, setEmailOpen] = useState(false)
   const [pdfBusy, setPdfBusy] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [series, setSeries] = useState<Document[]>([])
 
   // Ctrl+P should print the document sheet alone, not the surrounding app.
   useEffect(() => {
     document.body.classList.add('printing-document')
     return () => document.body.classList.remove('printing-document')
   }, [])
+
+  // Sibling invoices, so a member of a series can see the whole series.
+  useEffect(() => {
+    if (!doc || (!doc.recurrence && !doc.seriesId)) {
+      setSeries([])
+      return
+    }
+    let cancelled = false
+    void seriesMembers(doc).then((members) => {
+      if (!cancelled) setSeries(members)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [doc])
 
   if (doc === undefined || !company) return null
 
@@ -115,8 +137,24 @@ export function DocumentView() {
     navigate(isInvoice ? '/invoices' : '/receipts', { replace: true })
   }
 
-  const duplicate = () =>
-    navigate(`/${doc.kind}s/new?duplicate=${doc.id}`)
+  const duplicate = () => navigate(`/${doc.kind}s/new?duplicate=${doc.id}`)
+
+  const generate = async () => {
+    setGenerating(true)
+    try {
+      const created = await generateNext(doc.id)
+      if (!created) {
+        toast('Nothing is due yet in this series.', 'info')
+        return
+      }
+      toast(`${created.number} created as a draft`)
+      navigate(`/documents/${created.id}`)
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not create the next invoice.', 'error')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   return (
     <div>
@@ -132,6 +170,17 @@ export function DocumentView() {
               {doc.number}
             </h1>
             <StatusBadge status={status} />
+            {doc.recurrence ? (
+              <Chip tone="brand">
+                <Repeat className="h-3 w-3" aria-hidden />
+                {RECURRENCE_LABELS[doc.recurrence]}
+              </Chip>
+            ) : doc.seriesId ? (
+              <Chip>
+                <Repeat className="h-3 w-3" aria-hidden />
+                Part of a series
+              </Chip>
+            ) : null}
           </div>
           <p className="mt-0.5 text-[13px] text-[color:var(--text-muted)]">
             {doc.client.name} · {formatDate(doc.issueDate)} ·{' '}
@@ -202,6 +251,65 @@ export function DocumentView() {
               </Button>
             ) : null}
           </Card>
+
+          {doc.recurrence || series.length > 1 ? (
+            <Card className="space-y-3">
+              <p className="text-[12px] font-semibold uppercase tracking-wider text-[color:var(--text-subtle)]">
+                Recurring series
+              </p>
+
+              {doc.recurrence && doc.nextIssueDate ? (
+                <>
+                  <p className="text-[13.5px] leading-relaxed text-[color:var(--text-muted)]">
+                    Repeats {RECURRENCE_LABELS[doc.recurrence].toLowerCase()}. Next copy dated{' '}
+                    <span className="font-medium text-[color:var(--text)]">
+                      {formatDate(doc.nextIssueDate)}
+                    </span>
+                    {doc.recurrenceEndDate
+                      ? `, ending ${formatDate(doc.recurrenceEndDate)}`
+                      : ''}
+                    .
+                  </p>
+                  <Button
+                    block
+                    variant={isDue(doc) ? 'brand' : 'secondary'}
+                    onClick={generate}
+                    loading={generating}
+                    disabled={!isDue(doc)}
+                    title={
+                      isDue(doc)
+                        ? 'Create the next invoice now'
+                        : `Available on ${formatDate(doc.nextIssueDate)}`
+                    }
+                  >
+                    <CalendarPlus className="h-4 w-4" aria-hidden />
+                    {isDue(doc) ? 'Generate next now' : 'Not due yet'}
+                  </Button>
+                </>
+              ) : null}
+
+              {series.length > 1 ? (
+                <div className="space-y-1 border-t pt-3">
+                  <p className="mb-1.5 text-[12.5px] text-[color:var(--text-muted)]">
+                    {series.length} invoices in this series
+                  </p>
+                  {series.map((member) => (
+                    <button
+                      key={member.id}
+                      onClick={() => navigate(`/documents/${member.id}`)}
+                      disabled={member.id === doc.id}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] transition enabled:hover:bg-black/5 disabled:font-semibold dark:enabled:hover:bg-white/10"
+                    >
+                      <span className="tabular truncate">{member.number}</span>
+                      <span className="shrink-0 text-[color:var(--text-subtle)]">
+                        {formatDate(member.issueDate)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </Card>
+          ) : null}
 
           <Card className="space-y-2.5">
             <p className="text-[12px] font-semibold uppercase tracking-wider text-[color:var(--text-subtle)]">

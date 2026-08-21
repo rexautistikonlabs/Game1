@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, Repeat } from 'lucide-react'
 import { StatusBadge } from './ui/Badge'
 import { computeTotals, displayStatus, formatDate, formatMoney, daysOverdue } from '../lib/format'
 import { cn } from '../lib/cn'
@@ -26,6 +26,12 @@ export function DocumentRow({ doc, showKind = false }: { doc: Document; showKind
             <span className="shrink-0 text-[12px] uppercase tracking-wide text-[color:var(--text-subtle)]">
               {doc.kind}
             </span>
+          ) : null}
+          {doc.recurrence || doc.seriesId ? (
+            <Repeat
+              className="h-3.5 w-3.5 shrink-0 text-[color:var(--brand)]"
+              aria-label={doc.recurrence ? 'Recurring invoice' : 'Part of a recurring series'}
+            />
           ) : null}
         </div>
         <div className="mt-0.5 truncate text-[13.5px] text-[color:var(--text-muted)]">

@@ -103,7 +103,7 @@ export interface Document {
   nextIssueDate?: string
   /** Stop generating once `nextIssueDate` passes this. Template only. */
   recurrenceEndDate?: string
-  /** The template's id, on every member of the series including the template. */
+  /** Shared key linking every invoice in one recurring series. */
   seriesId?: string
 
   createdAt: string

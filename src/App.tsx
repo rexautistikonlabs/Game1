@@ -15,6 +15,7 @@ import { Welcome } from './pages/Welcome'
 import { useApp } from './store/useApp'
 import { useActiveCompany, useCompanies } from './store/useCompanyData'
 import { onDesktopMenu } from './lib/download'
+import { catchUpRecurring } from './lib/recurrence'
 import { useShortcuts, type Shortcut } from './lib/shortcuts'
 import { withAlpha, readableOn } from './lib/format'
 import type { DocumentKind } from './types'
@@ -85,6 +86,24 @@ export function App() {
   useEffect(() => {
     void init()
   }, [init])
+
+  // Any recurring invoice whose date has passed becomes a draft. This runs once
+  // per app start rather than on a timer: there is no server, so "when the app
+  // is open" is the only moment anything can happen. `catchUpRecurring` shares
+  // one in-flight promise, so StrictMode's double effect cannot double-generate.
+  const toast = useApp((s) => s.toast)
+  useEffect(() => {
+    if (!ready) return
+    void catchUpRecurring().then((created) => {
+      if (created.length === 0) return
+      toast(
+        created.length === 1
+          ? `${created[0]!.number} was due today — created as a draft`
+          : `${created.length} recurring invoices were due — created as drafts`,
+        'info',
+      )
+    })
+  }, [ready, toast])
 
   if (!ready || companies === undefined) {
     return (

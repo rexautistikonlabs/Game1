@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, Eye, Save } from 'lucide-react'
+import { ArrowLeft, Eye, Repeat, Save } from 'lucide-react'
 import { Button } from '../components/ui/Button'
 import { Card, SectionTitle } from '../components/ui/Card'
 import { ClientPicker } from '../components/ClientPicker'
@@ -11,10 +11,18 @@ import { Segmented } from '../components/ui/SearchInput'
 import { SheetPreview } from '../components/SheetPreview'
 import { EditorSkeleton } from '../components/ui/Skeleton'
 import { claimNextNumber, db, newId } from '../db/db'
-import { addDays, computeTotals, currencySymbol, formatMoney, today } from '../lib/format'
+import { addDays, computeTotals, currencySymbol, formatDate, formatMoney, today } from '../lib/format'
+import { nextOccurrence } from '../lib/recurrence'
 import { useApp } from '../store/useApp'
 import { useActiveCompany, useClients, useDocument } from '../store/useCompanyData'
-import { PAYMENT_METHODS, type Document, type DocumentKind, type DocumentStatus } from '../types'
+import {
+  PAYMENT_METHODS,
+  RECURRENCE_LABELS,
+  type Document,
+  type DocumentKind,
+  type DocumentStatus,
+  type RecurrenceInterval,
+} from '../types'
 
 /** A brand-new document, pre-filled from the company's defaults. */
 function draftDocument(kind: DocumentKind, company: {
@@ -159,6 +167,23 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
       dueDate: kind === 'invoice' ? addDays(draft.issueDate, company.paymentTermsDays) : undefined,
       paymentMethod: kind === 'receipt' ? (draft.paymentMethod ?? 'Bank Transfer') : undefined,
       paidDate: kind === 'receipt' ? draft.issueDate : draft.paidDate,
+      // Only invoices repeat — a receipt records something that already happened.
+      ...(kind === 'receipt'
+        ? { recurrence: undefined, nextIssueDate: undefined, recurrenceEndDate: undefined }
+        : {}),
+    })
+  }
+
+  const setRecurrence = (recurrence: RecurrenceInterval | '') => {
+    if (!recurrence) {
+      patch({ recurrence: undefined, nextIssueDate: undefined, recurrenceEndDate: undefined })
+      return
+    }
+    patch({
+      recurrence,
+      // The first copy is due one interval after this invoice's own issue date.
+      nextIssueDate: nextOccurrence(draft.issueDate, recurrence),
+      seriesId: draft.seriesId ?? draft.id,
     })
   }
 
@@ -296,6 +321,10 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
                         ? addDays(issueDate, company.paymentTermsDays)
                         : undefined,
                       paidDate: draft.kind === 'receipt' ? issueDate : draft.paidDate,
+                      // Keep the schedule anchored to the invoice it repeats.
+                      ...(draft.recurrence && issueDate
+                        ? { nextIssueDate: nextOccurrence(issueDate, draft.recurrence) }
+                        : {}),
                     })
                   }}
                 />
@@ -400,6 +429,64 @@ export function DocumentEdit({ kind: newKind }: { kind?: DocumentKind }) {
               </dl>
             </div>
           </Card>
+
+          {isInvoice ? (
+            <Card className="space-y-5">
+              <SectionTitle
+                title="Repeat this invoice"
+                subtitle="SimpleBooks creates the next one as a draft — nothing is ever sent for you."
+              />
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field label="How often">
+                  <Select
+                    value={draft.recurrence ?? ''}
+                    onChange={(event) =>
+                      setRecurrence(event.target.value as RecurrenceInterval | '')
+                    }
+                  >
+                    <option value="">Does not repeat</option>
+                    {(Object.keys(RECURRENCE_LABELS) as RecurrenceInterval[]).map((interval) => (
+                      <option key={interval} value={interval}>
+                        {RECURRENCE_LABELS[interval]}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+
+                {draft.recurrence ? (
+                  <Field label="Stop after" hint="Leave blank to repeat indefinitely.">
+                    <Input
+                      type="date"
+                      value={draft.recurrenceEndDate ?? ''}
+                      min={draft.issueDate}
+                      onChange={(event) =>
+                        patch({ recurrenceEndDate: event.target.value || undefined })
+                      }
+                    />
+                  </Field>
+                ) : null}
+              </div>
+
+              {draft.recurrence && draft.nextIssueDate ? (
+                <p
+                  className="flex items-start gap-2.5 rounded-xl px-3.5 py-3 text-[13.5px] leading-relaxed"
+                  style={{ background: 'var(--brand-soft)' }}
+                >
+                  <Repeat
+                    className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--brand)]"
+                    aria-hidden
+                  />
+                  <span>
+                    Repeats {RECURRENCE_LABELS[draft.recurrence].toLowerCase()}. The next copy is
+                    dated <span className="font-medium">{formatDate(draft.nextIssueDate)}</span>,
+                    and appears as a draft once that date arrives — or whenever you press
+                    “Generate next”.
+                  </span>
+                </p>
+              ) : null}
+            </Card>
+          ) : null}
 
           <Card>
             <Field

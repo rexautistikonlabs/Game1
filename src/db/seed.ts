@@ -164,6 +164,9 @@ async function runSeed(): Promise<void> {
     },
   ]
 
+  // Declared up front so the retainer invoices can all share it.
+  const retainerSeriesId = newId()
+
   const snapshot = (client: Client) => ({
     name: client.name,
     email: client.email,
@@ -332,6 +335,50 @@ async function runSeed(): Promise<void> {
       discount: 200,
       notes: 'Returning-client credit applied.',
       currency: 'USD',
+      createdAt: now,
+      updatedAt: now,
+    },
+    // ---- A monthly retainer: two invoices already issued, the newest carrying
+    // the recurrence. Dated ahead of today so opening the app does not
+    // immediately generate a third.
+    {
+      id: retainerSeriesId,
+      companyId: forProfit.id,
+      kind: 'invoice',
+      number: 'NS-1037',
+      status: 'paid',
+      clientId: harbor.id,
+      client: snapshot(harbor),
+      issueDate: addDays(t, -62),
+      dueDate: addDays(t, -48),
+      paidDate: addDays(t, -50),
+      items: [item('Brand refresh retainer — monthly', 1, 1200, 8.8)],
+      discount: 0,
+      notes: 'Retainer, month 1 of 12.',
+      currency: 'USD',
+      seriesId: retainerSeriesId,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: newId(),
+      companyId: forProfit.id,
+      kind: 'invoice',
+      number: 'NS-1038',
+      status: 'sent',
+      clientId: harbor.id,
+      client: snapshot(harbor),
+      issueDate: addDays(t, -31),
+      dueDate: addDays(t, -17),
+      items: [item('Brand refresh retainer — monthly', 1, 1200, 8.8)],
+      discount: 0,
+      notes: 'Retainer, month 2 of 12.',
+      currency: 'USD',
+      // The active template: this is the invoice that decides when the next
+      // one appears.
+      recurrence: 'monthly',
+      nextIssueDate: addDays(t, 12),
+      seriesId: retainerSeriesId,
       createdAt: now,
       updatedAt: now,
     },

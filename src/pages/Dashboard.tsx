@@ -2,9 +2,11 @@ import { Link, useNavigate } from 'react-router-dom'
 import {
   AlertTriangle,
   ArrowRight,
+  CalendarPlus,
   CheckCircle2,
   FileText,
   Receipt,
+  Repeat,
   ScanLine,
   Wallet,
 } from 'lucide-react'
@@ -25,13 +27,17 @@ import {
   monthStart,
   today,
 } from '../lib/format'
+import { dueTemplates, generateNext } from '../lib/recurrence'
+import { useApp } from '../store/useApp'
 import { useActiveCompany, useDocuments, useExpenses } from '../store/useCompanyData'
+import { RECURRENCE_LABELS } from '../types'
 
 export function Dashboard() {
   const company = useActiveCompany()
   const documents = useDocuments()
   const expenses = useExpenses()
   const navigate = useNavigate()
+  const toast = useApp((s) => s.toast)
 
   if (!company || !documents || !expenses) return <DashboardSkeleton />
 
@@ -55,6 +61,15 @@ export function Dashboard() {
     .filter((e) => e.date >= startOfMonth)
     .reduce((sum, e) => sum + e.total, 0)
 
+  // Normally empty: the startup catch-up pass has already generated anything
+  // due. This is the safety net for a series that comes due mid-session.
+  const due = dueTemplates(invoices)
+
+  const recurring = invoices.filter((doc) => doc.recurrence)
+  const nextUp = recurring
+    .filter((doc) => doc.nextIssueDate)
+    .sort((a, b) => a.nextIssueDate!.localeCompare(b.nextIssueDate!))[0]
+
   const recent = documents.slice(0, 6)
   const recentExpenses = expenses.slice(0, 5)
   const isEmpty = documents.length === 0 && expenses.length === 0
@@ -67,6 +82,46 @@ export function Dashboard() {
       />
 
       <SampleDataTip />
+
+      {due.length ? (
+        <div
+          className="surface mb-6 flex flex-wrap items-center gap-4 rounded-2xl p-4 shadow-card"
+          style={{ borderColor: 'var(--brand)' }}
+        >
+          <span
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
+            style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}
+            aria-hidden
+          >
+            <Repeat className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[14.5px] font-semibold">
+              {due.length === 1
+                ? '1 recurring invoice is due'
+                : `${due.length} recurring invoices are due`}
+            </p>
+            <p className="text-[13px] text-[color:var(--text-muted)]">
+              {due.map((doc) => doc.client.name).join(', ')}
+            </p>
+          </div>
+          <Button
+            variant="brand"
+            onClick={async () => {
+              const created = await Promise.all(due.map((doc) => generateNext(doc.id)))
+              const made = created.filter(Boolean)
+              toast(
+                made.length === 1
+                  ? `${made[0]!.number} created as a draft`
+                  : `${made.length} drafts created`,
+              )
+            }}
+          >
+            <CalendarPlus className="h-4 w-4" aria-hidden />
+            Create {due.length === 1 ? 'the draft' : 'the drafts'}
+          </Button>
+        </div>
+      ) : null}
 
       {/* ---- The three actions people actually came here for ---- */}
       <div className="mb-7 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -151,6 +206,21 @@ export function Dashboard() {
           {/* minmax(0,…) plus min-w-0 on the cards: grid items default to
               min-width:auto, which stops them shrinking below their content
               and pushes the page sideways on a narrow phone. */}
+          {nextUp?.nextIssueDate ? (
+            <p className="mb-6 flex items-center gap-2 text-[13px] text-[color:var(--text-muted)]">
+              <Repeat className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              Next recurring invoice:{' '}
+              <Link
+                to={`/documents/${nextUp.id}`}
+                className="font-medium text-[color:var(--brand)] hover:underline"
+              >
+                {nextUp.client.name}
+              </Link>{' '}
+              on {formatDate(nextUp.nextIssueDate)} ·{' '}
+              {RECURRENCE_LABELS[nextUp.recurrence!].toLowerCase()}
+            </p>
+          ) : null}
+
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
             {/* ---- Recent documents ---- */}
             <Card padded={false} className="min-w-0">

@@ -1,0 +1,188 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Overwritten per company whenever the active company changes. */
+    --brand: #1d4ed8;
+    --brand-soft: rgba(29, 78, 216, 0.1);
+    --brand-ink: #ffffff;
+
+    --page: #f4f5f7;
+    --surface: #ffffff;
+    --surface-2: #fafbfc;
+    --border: #e4e7eb;
+    --border-strong: #d3d8de;
+    --text: #15181c;
+    --text-muted: #6b7681;
+    --text-subtle: #98a2ad;
+  }
+
+  :root[data-theme='dark'] {
+    --page: #0b0d0f;
+    --surface: #15181c;
+    --surface-2: #1b1f24;
+    --border: #282e35;
+    --border-strong: #3a4149;
+    --text: #f3f5f7;
+    --text-muted: #9aa4af;
+    --text-subtle: #6b7681;
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply font-sans antialiased;
+    background: var(--page);
+    color: var(--text);
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Numbers in tables should line up. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: var(--brand-soft);
+  }
+
+  /* One visible focus style everywhere — keyboard users are first-class. */
+  :focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* Hide the spinner on number inputs; the arrows only get in the way when
+     you are typing amounts. */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+  }
+
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-subtle);
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  .surface {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+
+  .field {
+    @apply w-full rounded-lg px-3 py-2 text-[15px] transition;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+  }
+  .field::placeholder {
+    color: var(--text-subtle);
+  }
+  .field:hover:not(:disabled) {
+    border-color: var(--text-subtle);
+  }
+  .field:focus {
+    outline: none;
+    border-color: var(--brand);
+    box-shadow: 0 0 0 3px var(--brand-soft);
+  }
+  .field:disabled {
+    background: var(--surface-2);
+    color: var(--text-muted);
+    cursor: not-allowed;
+  }
+
+  .label {
+    @apply mb-1.5 block text-[13px] font-medium;
+    color: var(--text-muted);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Printing.
+   `printing-document` is added to <body> only while a document is on screen,
+   so Ctrl+P anywhere else still prints the page normally.
+   --------------------------------------------------------------------------- */
+@page {
+  size: A4;
+  margin: 0;
+}
+
+@media print {
+  html,
+  body {
+    background: #ffffff !important;
+    height: auto !important;
+  }
+
+  body.printing-document * {
+    visibility: hidden !important;
+  }
+
+  body.printing-document [data-print-root],
+  body.printing-document [data-print-root] * {
+    visibility: visible !important;
+  }
+
+  body.printing-document [data-print-root] {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 210mm !important;
+    margin: 0 !important;
+    /* Matches DocumentSheet's own padding — see the note there on why 14mm. */
+    padding: 14mm 14mm !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  /* Never split a line-item row or the totals block across two pages. */
+  tr,
+  .avoid-break {
+    break-inside: avoid;
+  }
+}

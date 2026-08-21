@@ -1,0 +1,79 @@
+appId: org.simplebooks.app
+productName: SimpleBooks
+copyright: Copyright © SimpleBooks
+
+directories:
+  output: release
+  buildResources: build
+
+# Vite bundles every renderer dependency into dist/, and the main process
+# requires nothing but `electron` and Node builtins — so node_modules is pure
+# dead weight in the package. Excluding it takes the app payload from ~192 MB
+# to ~30 MB; what remains is almost entirely the Electron runtime itself.
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+  - '!node_modules/**/*'
+
+# Generated from build/icon.svg. electron-builder derives .icns and .ico from
+# this single 1024×1024 PNG, so there is only one file to keep in sync.
+icon: build/icon.png
+
+artifactName: '${productName}-${version}-${os}-${arch}.${ext}'
+
+mac:
+  category: public.app-category.finance
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  # An unsigned build still needs the entitlement set to be coherent; see
+  # BUILD.md for signing and notarization.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+
+dmg:
+  title: '${productName} ${version}'
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: SimpleBooks
+
+linux:
+  # Required by the .deb target. Change this (and package.json `author`)
+  # before distributing a build — see BUILD.md.
+  maintainer: SimpleBooks <maintainer@simplebooks.invalid>
+  category: Office
+  synopsis: Simple offline invoicing and receipt bookkeeping
+  description: >-
+    Invoices, receipts and expenses for as many companies as you like.
+    Everything stays on this computer — no account, no cloud, no subscription.
+  desktop:
+    entry:
+      MimeType: application/pdf;image/png;image/jpeg
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+
+deb:
+  # A real Debian section — `linux.category` only sets the .desktop entry,
+  # and without this the package lands in "default".
+  packageCategory: utils
+
+# Publishing is deliberately off: this is an offline app with no update server.
+publish: null

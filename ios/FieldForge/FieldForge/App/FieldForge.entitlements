@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Apple Pay. Replace with the merchant identifiers on your Apple Developer
+	     account. Apple permits Apple Pay for donations to registered nonprofits. -->
+	<key>com.apple.developer.in-app-payments</key>
+	<array>
+		<string>merchant.org.example.fieldforge</string>
+	</array>
+
+	<!-- Shared organizational memory (Pro). SwiftData drives CloudKit directly;
+	     see Services/SyncEngine.swift for the model constraints this imposes. -->
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.org.example.fieldforge</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<key>aps-environment</key>
+	<string>development</string>
+
+	<!-- Tap to Pay on iPhone is granted by request only. Keep it commented out
+	     until Apple approves the app, otherwise code signing fails.
+	<key>com.apple.developer.proximity-reader.payment.acceptance</key>
+	<true/>
+	-->
+</dict>
+</plist>

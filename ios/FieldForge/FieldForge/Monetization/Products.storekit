@@ -1,0 +1,95 @@
+{
+  "identifier" : "FIELDFORGE-STOREKIT-CONFIG",
+  "nonRenewingSubscriptions" : [],
+  "products" : [],
+  "settings" : {
+    "_askToBuyEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_storeKitErrors" : []
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "21563789",
+      "localizations" : [],
+      "name" : "FieldForge Team",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "12.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "6741082301",
+          "introductoryOffer" : {
+            "internalID" : "9928374651",
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1M"
+          },
+          "localizations" : [
+            {
+              "description" : "Shared team memory, multiple organizations, advanced branding and bulk export. Billed monthly.",
+              "displayName" : "Team — Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "org.example.fieldforge.team.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Team Monthly",
+          "subscriptionGroupID" : "21563789",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "119.00",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "6741082302",
+          "introductoryOffer" : {
+            "internalID" : "9928374652",
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1M"
+          },
+          "localizations" : [
+            {
+              "description" : "Everything in Team, billed once a year. Works out cheaper than monthly.",
+              "displayName" : "Team — Annual",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "org.example.fieldforge.team.annual",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Team Annual",
+          "subscriptionGroupID" : "21563789",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "codeOffers" : [],
+          "displayPrice" : "49.00",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "6741082303",
+          "introductoryOffer" : {
+            "internalID" : "9928374653",
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1M"
+          },
+          "localizations" : [
+            {
+              "description" : "For organizations with an annual budget under $250,000. Same features, honour-system pricing.",
+              "displayName" : "Team — Small Organization",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "org.example.fieldforge.team.annual.small",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Team Annual Small Org",
+          "subscriptionGroupID" : "21563789",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : { "major" : 3, "minor" : 0 }
+}

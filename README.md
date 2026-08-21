@@ -1,5 +1,12 @@
 # SimpleBooks
 
+> **This repository holds two products.**
+> **SimpleBooks** (below) is an offline-first desktop bookkeeping app.
+> **[FieldForge](ios/FieldForge/)** is a native iOS field app for nonprofit
+> outreach — receipts and IRS acknowledgment letters, Apple Pay, a warmth-scored
+> CRM, and full offline capture. See `ios/FieldForge/README.md`.
+
+
 The simplest receipt & invoice bookkeeping app I could build. Offline-first, multi-company,
 and it never asks you to make an account.
 

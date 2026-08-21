@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>FieldForge</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+
+	<!-- Every permission below is asked for lazily, at the moment the staffer
+	     taps the feature that needs it. Nothing is requested at launch. -->
+	<key>NSCameraUsageDescription</key>
+	<string>FieldForge uses the camera to photograph business signs, business cards, in-kind donations, and site visits so you can capture a record without typing.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>FieldForge records short voice notes so you can dictate what happened while you keep walking.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>FieldForge turns your voice notes into text. Transcription runs on this iPhone, so it works with no signal.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>FieldForge stamps visits with where they happened and shows nearby contacts on the map. Location is only read while the app is open.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>FieldForge can import a contact you already have on this iPhone instead of making you retype it.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>FieldForge can save a copy of a finished receipt or acknowledgment letter to your photo library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>FieldForge can attach a photo you already took to a visit or an in-kind donation.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>FieldForge can lock donor records behind Face ID so a borrowed or lost iPhone does not expose them.</string>
+
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+</dict>
+</plist>

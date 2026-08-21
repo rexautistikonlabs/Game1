@@ -6,11 +6,14 @@ and it never asks you to make an account.
 - **Invoices and receipts** with a clean printable template, automatic totals, and one-click
   print / PDF / email
 - **Multiple companies** — a nonprofit and an LLC side by side, each with its own logo, tax ID,
-  currency, numbering and brand colour, switched from the top bar
+  currency, numbering, expense categories and brand colour, switched from the top bar
 - **Scanned receipt import** — drop in a photo or PDF and OCR reads the vendor, date and total,
   entirely on your own machine
-- **CSV export** for invoices, receipts and expenses, scoped to one company and a date range
+- **Recurring invoices** — monthly, quarterly or yearly, generated as drafts you approve
+- **Reports** — income, expenses, net and what you are owed, over any date range
+- **CSV export** for invoices, receipts, expenses and reports, scoped to one company
 - **JSON backup** of everything, restorable in one click
+- **Command palette** — `Cmd/Ctrl+K` to switch company or find anything
 - **No backend.** All data lives in IndexedDB on this computer. Nothing is ever uploaded.
 
 ---
@@ -79,6 +82,9 @@ src/
     useCompanyData.ts   Company-scoped live queries
   lib/
     format.ts           Money, dates, and all total/tax arithmetic
+    recurrence.ts       Recurring-invoice dates and generation
+    reports.ts          Report figures and the report CSV
+    shortcuts.ts        Global keyboard shortcut binding
     ocr.ts              Tesseract pipeline plus the vendor/date/total parsers
     csv.ts              Bookkeeping-friendly CSV shapes
     backup.ts           JSON export and restore
@@ -88,7 +94,7 @@ src/
     DocumentSheet.tsx   The printed invoice/receipt — A4-sized, fixed light colours
     …                   Editor, dialogs, and the UI primitives
   pages/                Dashboard, Documents, DocumentEdit, DocumentView,
-                        Expenses, Clients, Settings, Welcome
+                        Expenses, Reports, Clients, Settings, Welcome
 ```
 
 **Stack**: React 18 + TypeScript + Vite · Tailwind CSS · Zustand · Dexie (IndexedDB) ·
@@ -109,6 +115,20 @@ address as it was when issued. Editing or deleting a client never rewrites histo
 **Numbers are claimed atomically.** `claimNextNumber` reads and increments the company's
 counter inside a single Dexie transaction, so two fast clicks cannot produce a duplicate. A
 number is claimed on first save, so unsaved drafts never burn one.
+
+**Recurring invoices have no scheduler.** One document per series carries the cadence and the
+date of the next copy; anything due is generated while the app is open — on startup, or from
+the "Generate next" button. Generation runs in a transaction that re-checks whether the series
+is still due, so a click racing the startup pass cannot produce two invoices for the same
+date. The catch-up pass caps at 12 per series so a long-dormant series does not flood you.
+
+**Categories are a picklist, not a foreign key.** Expenses store the category *name*, so
+renaming or deleting a category cannot rewrite what an old expense says it was for — the same
+reasoning as the client snapshots. Renaming does offer to carry existing expenses across.
+
+**Reports are a view, never a stored figure.** Income counts a document on the day it was
+marked paid; "outstanding" is every unpaid invoice as of today, so it deliberately does not
+move when you change the date range.
 
 **Printing uses the browser's own print dialog.** It is the one path that produces a correct
 PDF on every platform, and "Save as PDF" is already in that dialog. The document sheet is laid
@@ -151,15 +171,23 @@ There is no sync and no cloud, which means **the backup button in Settings is th
 will get**. `Export backup (JSON)` writes the whole database to a single file, and
 `Restore from backup` puts it back.
 
-## Keyboard and menu shortcuts (desktop)
+## Keyboard shortcuts
+
+Press `?` in the app for this list.
 
 | Shortcut | Action |
 | --- | --- |
+| `Cmd/Ctrl + K` | Command palette — switch company, jump anywhere, find a record |
 | `Cmd/Ctrl + N` | New invoice |
 | `Cmd/Ctrl + Shift + N` | New receipt |
 | `Cmd/Ctrl + I` | Import a scanned receipt |
 | `Cmd/Ctrl + S` | Export a backup |
 | `Cmd/Ctrl + P` | Print the document on screen |
+| `?` | Show all shortcuts |
+| `Esc` | Close a dialog or the palette |
+
+Shortcuts with a modifier work while you are typing in a field; bare-key ones do not, so a `?`
+in an invoice description stays a `?`.
 
 ## Browser support
 

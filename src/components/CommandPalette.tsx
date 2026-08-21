@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import {
-  ArrowRight,
   Building2,
+  ChartNoAxesColumn,
   Check,
   CornerDownLeft,
+  Download,
   FileText,
   LayoutDashboard,
   Plus,
@@ -128,7 +129,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         group: 'Actions',
         label: 'Export a backup',
         hint: 'Everything, as JSON',
-        icon: <ArrowRight className="h-4 w-4" />,
+        icon: <Download className="h-4 w-4" />,
         keywords: 'save json download data',
         run: () => navigate('/settings?backup=1'),
       },
@@ -156,7 +157,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       ['/invoices', 'Invoices', <FileText className="h-4 w-4" />],
       ['/receipts', 'Receipts', <Receipt className="h-4 w-4" />],
       ['/expenses', 'Expenses', <Wallet className="h-4 w-4" />],
-      ['/reports', 'Reports', <ArrowRight className="h-4 w-4" />],
+      ['/reports', 'Reports', <ChartNoAxesColumn className="h-4 w-4" />],
       ['/clients', 'Clients', <Users className="h-4 w-4" />],
       ['/settings', 'Settings', <SettingsIcon className="h-4 w-4" />],
     ]

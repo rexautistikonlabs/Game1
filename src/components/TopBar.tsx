@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
+  ChartNoAxesColumn,
   FileText,
   LayoutDashboard,
   Search,
@@ -23,6 +24,7 @@ const NAV_ITEMS = [
   { to: '/invoices', label: 'Invoices', icon: FileText },
   { to: '/receipts', label: 'Receipts', icon: Receipt },
   { to: '/expenses', label: 'Expenses', icon: Wallet },
+  { to: '/reports', label: 'Reports', icon: ChartNoAxesColumn },
   { to: '/clients', label: 'Clients', icon: Users },
   { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ]

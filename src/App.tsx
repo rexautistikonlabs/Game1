@@ -9,6 +9,7 @@ import { DocumentEdit } from './pages/DocumentEdit'
 import { DocumentView } from './pages/DocumentView'
 import { Documents } from './pages/Documents'
 import { Expenses } from './pages/Expenses'
+import { Reports } from './pages/Reports'
 import { Clients } from './pages/Clients'
 import { Settings } from './pages/Settings'
 import { Welcome } from './pages/Welcome'
@@ -156,6 +157,7 @@ export function App() {
           <Route path="/documents/:id" element={<DocumentView />} />
           <Route path="/documents/:id/edit" element={<KeyedDocumentEdit />} />
           <Route path="/expenses" element={<Expenses />} />
+          <Route path="/reports" element={<Reports />} />
           <Route path="/clients" element={<Clients />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />

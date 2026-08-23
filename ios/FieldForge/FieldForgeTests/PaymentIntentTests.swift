@@ -567,6 +567,15 @@ struct TextPayLinkTests {
         #expect(once.begin())
     }
 
+    @Test("A failed connect resets discovery so the next Collect rediscovers")
+    func failedConnectAllowsRediscover() {
+        let once = TapToPayDiscoveryOnce()
+        #expect(once.begin())
+        once.reset()
+        #expect(!once.hasStarted)
+        #expect(once.begin())
+    }
+
     @Test("Success does not cancel the discover Cancelable; user cancel and timeout do")
     func discoverCancelableOnlyOnCancelOrTimeout() {
         #expect(!TapToPayDiscoverCancelPolicy.shouldCancelDiscover(on: .readerDelivered))

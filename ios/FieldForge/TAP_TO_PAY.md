@@ -124,6 +124,16 @@ On a registered iPhone:
 
 Staff Wallet stays off. Text and email pay links stay.
 
+### After device test
+
+Confirm all of these on the physical iPhone:
+
+- [ ] Hold-card UI appears (`Hold card to top of iPhone`).
+- [ ] No crash when a contactless card is presented at the top of the phone.
+- [ ] Cancel during hold-card returns cleanly to What (no hang, no abort).
+- [ ] Second Collect in the same session still works (fresh discover if the reader dropped; not a stale reader).
+- [ ] Failure alert shows if the card is pulled away or declined; the app does not abort.
+
 ## What this pass does not include
 
 QR codes. CloudKit at launch. Secret keys on iOS. Staff Apple Pay Wallet.

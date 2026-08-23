@@ -9,7 +9,7 @@
 # FieldForge/ folder in as a folder reference, and copy the settings from here.
 name: FieldForge
 options:
-  bundleIdPrefix: org.example.fieldforge
+  bundleIdPrefix: org.rexautistikonlabs
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -20,11 +20,17 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
-    DEVELOPMENT_TEAM: "" # <- your Apple Developer Team ID
+    DEVELOPMENT_TEAM: 964M77TDXU
+    CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     SWIFT_STRICT_CONCURRENCY: minimal
     CLANG_ENABLE_MODULES: YES
     OTHER_SWIFT_FLAGS: "$(inherited)"
+
+packages:
+  StripeTerminal:
+    url: https://github.com/stripe/stripe-terminal-ios
+    from: 5.0.0
 
 targets:
   FieldForge:
@@ -45,12 +51,16 @@ targets:
           - "App/Info.plist"
           - "App/FieldForge.entitlements"
           - "Monetization/Products.storekit"
+          - "**/*.h"
     settings:
       base:
         PRODUCT_NAME: FieldForge
-        PRODUCT_BUNDLE_IDENTIFIER: org.example.fieldforge
+        PRODUCT_BUNDLE_IDENTIFIER: org.rexautistikonlabs.fieldforge
         INFOPLIST_FILE: FieldForge/App/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
         CODE_SIGN_ENTITLEMENTS: FieldForge/App/FieldForge.entitlements
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 964M77TDXU
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -59,13 +69,28 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         ENABLE_PREVIEWS: YES
         SWIFT_EMIT_LOC_STRINGS: YES
-        # Tap to Pay on iPhone needs the com.apple.developer.proximity-reader.payment.acceptance
-        # entitlement from Apple plus a payment-platform SDK. Until that is granted the
-        # ProximityReader code path compiles but reports .needsEntitlement at runtime.
-    info:
-      path: FieldForge/App/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: FieldForge/Services/SharedWarmth/CloudKitExceptionCatcher.h
+        CLANG_ENABLE_OBJC_ARC: YES
+        # Tap to Pay is a managed development entitlement. Declare
+        # com.apple.developer.proximity-reader.payment.acceptance in the
+        # entitlements file / entitlements.properties — do not add it via
+        # Xcode + Capability (unavailable for this target). Runtime still
+        # skips Terminal Tap to Pay APIs if the signed profile lacks the key.
+    # Do not use XcodeGen `info:` — it overwrites the hand-written Info.plist.
+    # Entitlements properties must be listed here so `xcodegen generate` keeps
+    # Apple Pay instead of writing an empty entitlements file.
+    # Tap to Pay is declared as a raw key, not via the capability library.
     entitlements:
       path: FieldForge/App/FieldForge.entitlements
+      properties:
+        com.apple.developer.in-app-payments:
+          - merchant.org.rexautistikonlabs.fieldforge
+        com.apple.developer.proximity-reader.payment.acceptance: true
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.org.rexautistikonlabs.fieldforge
+        com.apple.developer.icloud-services:
+          - CloudKit
+        aps-environment: development
     dependencies:
       - sdk: PassKit.framework
       - sdk: PDFKit.framework
@@ -81,8 +106,13 @@ targets:
       - sdk: UserNotifications.framework
       - sdk: AVFoundation.framework
       - sdk: CloudKit.framework
+      - sdk: UniformTypeIdentifiers.framework
       - sdk: ProximityReader.framework
         weak: true
+      - sdk: Security.framework
+      - sdk: AuthenticationServices.framework
+      - package: StripeTerminal
+        product: StripeTerminal
 
   FieldForgeTests:
     type: bundle.unit-test
@@ -93,8 +123,10 @@ targets:
       - target: FieldForge
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.example.fieldforge.tests
+        PRODUCT_BUNDLE_IDENTIFIER: org.rexautistikonlabs.fieldforge.tests
         GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 964M77TDXU
 
 schemes:
   FieldForge:

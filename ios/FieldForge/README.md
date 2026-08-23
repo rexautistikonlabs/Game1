@@ -46,29 +46,29 @@ Every `.swift` file under `FieldForge/` is picked up by a recursive glob, so new
 files need no project surgery — regenerate and they are in the target.
 
 **Requirements:** Xcode 15.3 or newer, iOS 17.0 deployment target, Swift 5
-language mode. No third-party dependencies — nothing to resolve, no package
-graph, no CocoaPods.
+language mode. One Swift package: **Stripe Terminal**, used only for Tap to Pay
+on iPhone. It is never initialised at launch, and it is never called unless
+Apple has granted the Tap to Pay entitlement. Apple Pay does not use it.
 
 ### 2. Set your team and bundle identifier
 
 In `project.yml`:
 
 ```yaml
-DEVELOPMENT_TEAM: ABCDE12345            # your Apple Developer Team ID
-PRODUCT_BUNDLE_IDENTIFIER: org.yourorg.fieldforge
+DEVELOPMENT_TEAM: 964M77TDXU            # Rex Autistikon Research Foundation
+PRODUCT_BUNDLE_IDENTIFIER: org.rexautistikonlabs.fieldforge
 ```
 
-Then re-run `xcodegen generate`. Also update the two identifiers in
-`FieldForge/App/FieldForge.entitlements` to match your account:
+Then re-run `xcodegen generate`. Merchant and CloudKit identifiers live in
+`FieldForge/App/FieldForge.entitlements` and must match the Developer portal:
 
 ```
-merchant.org.example.fieldforge   ->  merchant.<your-bundle-id>
-iCloud.org.example.fieldforge     ->  iCloud.<your-bundle-id>
+merchant.org.rexautistikonlabs.fieldforge
+iCloud.org.rexautistikonlabs.fieldforge
 ```
 
-…and the container name in `Services/Persistence.swift` and
-`Services/SharedWarmth/SharedWarmthService.swift`, both of which currently say
-`iCloud.org.example.fieldforge`.
+The same CloudKit container name is used in `Services/Persistence.swift`,
+`Services/SharedWarmth/SharedWarmthService.swift`, and `Features/Settings/TeamView.swift`.
 
 ### 3. Run it
 
@@ -82,8 +82,12 @@ the CRM, the map, follow-ups and route mode. This is the majority of the app,
 and it works in airplane mode.
 
 **What needs Apple Developer configuration** is listed under
-[Remaining work](#remaining-work) — Apple Pay, iCloud team sharing and
-subscriptions each need a portal identifier before they do anything.
+[Remaining work](#remaining-work) — iCloud team sharing and subscriptions each
+need a portal identifier before they do anything. Donors pay via a **text or
+email pay link**. In-person Wallet charge is off so staff cannot charge this
+iPhone’s Wallet by mistake. Other nonprofits tap **Connect Stripe** in Settings
+so pay-link funds land on *their* Stripe. They never see Azure, merchant IDs,
+or secret keys. No `sk_` on iOS. No CloudKit at launch.
 
 ### If you would rather not use XcodeGen
 
@@ -214,21 +218,53 @@ kept, so a donor holding the old copy can be told which is current.
 it does not exist.** A tax acknowledgment is never issued for money that has not
 arrived (`Gift.isPaymentConfirmed` gates it, and there is a test for that).
 
-- **Apple Pay** — full `PKPaymentAuthorizationController` implementation. The
-  payment sheet shows its green tick only after the processor confirms, because
-  a tick before the money moves is a lie the donor watches you tell. The payer's
-  email is requested on the sheet, which is what makes "receipt sent before they
-  walk away" possible.
-- **Tap to Pay on iPhone** — the `ProximityReader` path is present and reports
-  availability precisely (unsupported device / missing entitlement / not
-  provisioned / offline), each with an explanation and a manual fallback. It is
-  gated behind a compile flag until Apple grants the entitlement; see
-  [Wiring Tap to Pay](#wiring-tap-to-pay).
-- **Manual** — cash, cheque, in-kind, card-taken-elsewhere, pledge. Not a
-  consolation prize: in real outreach this is most gifts, so it is a first-class
-  `PaymentProvider` with the same interface, and when there is no signal these
-  move to the *top* of the method list while the dead electronic buttons drop
-  below with a plain explanation.
+- **Text pay link** and **Email pay link** — the donor path. Gift step has
+  amount plus the contact’s phone and email. Both buttons ask Azure
+  (`POST /api/create-payment-link`) for a Checkout URL using `STRIPE_SECRET_KEY`
+  on the function, never on the iPhone, then reuse the returned `url`.
+  **Text pay link** opens Messages (`MFMessageCompose` or `sms:`) with
+  `{Org} — tap to give ${amount}: {url}`. **Email pay link** opens Mail
+  (`MFMailComposeViewController`, fallback `mailto:`) with
+  To: contact email, Subject: `{Org} — gift of ${amount}`, Body: a short note
+  plus the url. Phone and email can both exist; staff can send one or both.
+  Sending twice may create two Checkout sessions — the gift stores the latest
+  `sessionId` and status checks that one. If the contact has no number or no
+  email, the app asks for it and saves it on the Contact. The gift stays unpaid
+  until Stripe reports `succeeded`. v1: pull-to-refresh or **I got paid** /
+  **Mark paid** GETs session status from Azure. A letter is issued only after
+  that. No CloudKit at launch.
+- **In-person Wallet charge is off.** Capture does not present
+  `PKPaymentAuthorization` or “Pay with this iPhone’s Wallet.” Azure
+  `POST /api/create-payment-intent` stays deployed; the UI does not call it.
+  Settings may still show Stripe backend + `pk_` as platform config.
+- **Connect Stripe** — other nonprofits tap **Settings → Connect Stripe**
+  (Express OAuth). FieldForge stores `acct_…` in the Keychain. Azure creates the
+  pay link with `Stripe-Account` so funds land on *their* Stripe. No connected
+  account charges the platform (current Rex test behavior). Downloading orgs
+  never see Azure, merchant IDs, CSRs, or secret keys.
+- **Tap to Pay on iPhone** — selecting the tile is not a charge. **Collect**
+  (or Next on What) starts Stripe Terminal: Azure `POST /api/connection-token`
+  → `{ secret, locationId }` (and a `card_present` PaymentIntent when amount is
+  sent), then Apple’s terms / reader discovery the first time, then **Hold card
+  to top of iPhone**. Discovery never starts at launch. A missing Terminal
+  location alerts *“Create a Terminal location in Stripe Dashboard and set
+  STRIPE_TERMINAL_LOCATION_ID on Azure.”* (Stripe Dashboard → Terminal →
+  Locations) and does not call `discoverReaders`. Gift is received only after
+  PaymentIntent `succeeded`. Cancel, fail, timeout, or a Stripe/Apple discovery
+  error stay on What with the gift unpaid — no letter, no crash. Simulator or a
+  missing Apple grant alerts *“Tap to Pay needs a registered iPhone and Apple
+  development entitlement”* and stays on What. **Development devices only.** Do
+  not send Apple review videos until this collect UI actually opens on a
+  physical iPhone. See [TAP_TO_PAY.md](TAP_TO_PAY.md).
+- **Manual** — cash, cheque, in-kind, recorded card (last 4 only), pledge.
+  Unchanged, first-class, and fully offline. Next can proceed; a next action is
+  still required at visit end.
+
+**Document gating.** Tap to Pay, text pay link, and email pay link cannot leave
+What for Document until Stripe `payment-status` or Terminal reports succeeded.
+Cash, check, in-kind, pledge, recorded card, and other may proceed. A tax letter
+still requires Gift received/deposited, and for card / link / Tap to Pay,
+Stripe `succeeded`.
 
 Amount, date, card description and payer name auto-populate from a cleared
 payment, and the amount field locks — so what the donor was charged and what the
@@ -414,7 +450,7 @@ location denied, or genuinely nothing owed.
 
 - Unlimited receipts and acknowledgment letters, both types
 - Logo, brand colour, EIN, signature — full branding
-- Apple Pay, cash, cheque, in-kind capture
+- Pay by link, cash, cheque, in-kind capture
 - Contacts, visits, giving history, reminders, kept forever
 - Your own warmth ratings and your own map
 - Full offline capture, email, AirDrop, printing
@@ -551,8 +587,44 @@ Swift Testing, weighted toward the places where being wrong causes real harm:
 | `RoutePlannerTests` | Route ordering on known geometry, distance consistency, progress |
 | `ReminderTimingTests` | Time-of-day scheduling; never fires in the small hours |
 | `AuditAndGatingTests` | Audit trail completeness, void semantics, the free/paid line, letterhead migration, the unbuilt-feature guard |
+| `PaymentIntentTests` | Secret keys never stick; Apple Pay uses the platform origin; Connect is `acct_` only; tax letters wait for `succeeded` (Apple Pay, Tap to Pay, text/email pay link); SMS and email copy have no `sk_` |
 | `PDFPaginationTests` | Real PDFs through the real templates: multi-page letters with photos, every letterhead × typeface × footer combination, receipts staying to one page |
 | `CSVExporterTests` | RFC 4180 quoting against adversarial donor names, BOM and CRLF, private notes excluded from a shareable export |
+| `OpenDoorPrivacyTests` | Open Door invite copies place facts only; warmth and amounts cannot appear |
+| `CourtesyPrivacyTests` | Courtesy pings and projections cannot carry private notes, amounts, or warmth |
+| `CrewLedgerTests` | Staff-only points, streak badge, bank qualifier is not an amount |
+| `InKindMatcherTests` | Same category + ZIP / ZIP3; closed needs ignored |
+| `PlaybookTests` | Default ZIP 32221; come-back Tuesdays; route prefers playbook-today |
+| `ProofPacketTests` | Audit/delivery packet; imported letter keeps an IRS cover |
+
+---
+
+## Six field-work pillars (v1)
+
+FieldForge is the doorstep operating system for in-person nonprofit asks. Payment platforms can still take the card. These six layers sit on top of capture, letters/receipts, warmth, map, route, and outbox.
+
+### What is fully local (this iPhone / this org)
+
+| Pillar | What ships in v1 |
+|---|---|
+| **Open Door map** | `OpenDoorListing` is visible only if opted in. Private visit pins stay on the staffer's device. Invite-from-visit creates a **local draft** plus shareable explanation text. Org-local “mark as opted in” is manual — nothing is scraped. |
+| **Letter + receipt as trust** | Proof packet = issued PDF + in-kind photos + audit trail + delivery state, shared as one combined PDF. Imported premade letters attach **after** a generated IRS cover; built-in substantiation language is never shortened. |
+| **In-kind logistics** | `InKindNeed` and `InKindOffer` (leftover inventory checkbox on an in-kind conversation). Match is same category + same ZIP or neighbouring ZIP3. No checkout. |
+| **Crew sport** | Staff-only points: visits, letters/receipts issued, follow-ups closed, proof packets shared, in-kind offers logged. Streaks and badges. Never donors, amounts, or warmth as a public score. |
+| **City playbook** | Best day-part, “ask for Dana”, result of last ask, next-ask-after, ZIP. Default focus ZIP **32221** (editable in Settings). Map ZIP filter. Route prefers “come back Tuesdays” when today matches. Today lists “due in this ZIP”. |
+| **Inter-org courtesy** | `CourtesyPing` + `SharedCourtesyProjection`. Off-by-default toggle. Allowed: place name, ZIP / approximate pin, date only, courtesy-until, alreadyVisited / doNotStackAsk. |
+
+### What needs a future backend / network
+
+- **Public Open Door directory** — v1 listings are org-local. A city-wide opted-in map needs a server (or a CloudKit public database) and a real claim/opt-in flow. Not scraped.
+- **Live courtesy network** — v1 stores pings locally and marks them “ready to share when team courtesy is enabled.” `CourtesyService.isLiveCourtesyNetworkAvailable` is `false`. Do not treat the projection store as a live city feed.
+- **Team crew board** — points are per signed-in staffer on this device. Teammate totals need the existing shared-zone work plus a second projection type.
+
+Shared Warmth (team memory of warmth/giving) remains the paid CloudKit shared zone it already was. Courtesy is a **narrower** projection and is not that zone.
+
+### Privacy guarantees
+
+A business is never published from a private visit. Open Door listings and courtesy pings are built from named allow-lists: no path copies `privateNotes`, gift amounts, warmth, donor phone/email, or staff commentary onto those types. Private visit pins, playbook notes, and crew scores stay on-device unless the org later opts into a real courtesy network. Tests (`OpenDoorPrivacyTests`, `CourtesyPrivacyTests`) write sentinel strings into private fields and fail if they appear on a listing, ping, or CloudKit record.
 
 ---
 
@@ -562,9 +634,8 @@ Honest list. Nothing here blocks a first build or a TestFlight round.
 
 ### Needs an Apple Developer account (cannot be done in code)
 
-1. **Merchant identifier.** Create `merchant.<your-bundle-id>` in the developer
-   portal and put it in `App/FieldForge.entitlements` and
-   `PaymentGatewayRegistry`.
+1. **Merchant identifier.** Done for this app:
+   `merchant.org.rexautistikonlabs.fieldforge` (Stripe Apple Pay cert active).
 2. **CloudKit container.** Create `iCloud.<your-bundle-id>`, then deploy the
    schema to production before shipping — SwiftData creates it in development on
    first run, and a build that has not deployed it will silently fall back to
@@ -575,40 +646,102 @@ Honest list. Nothing here blocks a first build or a TestFlight round.
 4. **App icon.** `Assets.xcassets/AppIcon.appiconset` has the manifest but no
    1024×1024 image.
 
-### Wiring a processor
+### Wiring Stripe (pay link + PaymentIntent)
 
-Apple Pay gives you an encrypted token, not money. Implement the endpoint that
-`HostedProcessorGateway` posts to — a dozen lines with any processor's server
-SDK — and register it at launch:
+Merchant ID `merchant.org.rexautistikonlabs.fieldforge` is already in the
+entitlements. In-person Wallet charge is off in capture. Donors pay through
+**Text pay link** or **Email pay link** only.
 
-```swift
-PaymentGatewayRegistry.shared.configure(
-    gateway: HostedProcessorGateway(
-        endpoint: URL(string: "https://donations.example.org/api/charge")!,
-        organizationPublicKey: "pk_live_…"
-    ),
-    merchantIdentifier: "merchant.org.example.fieldforge"
-)
-```
+The platform owns Azure, the merchant ID, the Apple Pay cert, and
+`STRIPE_SECRET_KEY`. Downloading orgs never see those.
 
-The endpoint holds the processor secret, which keeps the app out of PCI scope
-entirely — it never sees a card number. **Honour the `Idempotency-Key` header**;
-it is what makes a retry after a dropped response safe rather than a
-double-charge.
+1. Deploy `azure-function/` (Node 20). Set on the Function App:
+   - `STRIPE_SECRET_KEY` — `sk_test_...` or `sk_live_...`. Never put that in iOS.
+   - `STRIPE_PUBLISHABLE_KEY` — `pk_test_...` / `pk_live_...` (the iPhone fetches
+     this; orgs never type it).
+   - `STRIPE_CLIENT_ID` — `ca_...` for Connect Express OAuth.
+   - `STRIPE_CONNECT_REDIRECT_URI` —
+     `https://<app>.azurewebsites.net/api/connect/oauth/callback`
+     (also add that URI in the Stripe Dashboard Connect OAuth settings).
+2. **Normal Settings is Connect Stripe only.** Other nonprofits tap that,
+   finish Express onboarding, and FieldForge stores `acct_…` in the Keychain.
+   Azure then creates the pay link or PaymentIntent with the `Stripe-Account`
+   header so funds land on *their* Stripe. No connected account → platform
+   account (Rex test behavior).
+3. Backend URL and `pk_` fields are hidden behind a platform/debug control
+   (DEBUG builds, or seven taps on **Settings → Version**). Empty URL uses
+   `https://fieldforgepay-a7hxe0h0dmcqaneu.eastus-01.azurewebsites.net`. A stored override still wins, so
+   the pay-link path for downloading orgs is unchanged.
 
-Until this is done, debug builds use `SimulatedProcessorGateway`, which refuses
-to operate in release and puts a red banner on Today and in Settings. A
-simulated payment producing a real-looking tax receipt would be a genuinely
-harmful bug, so the guard is a hard failure rather than a warning.
+Charge routes (same `STRIPE_SECRET_KEY`, never in iOS):
+
+- **`POST /api/create-payment-link`** `{ amount, giftId, contactName }` →
+  `{ url }`. Optional `stripeAccount`. This is the donor SMS and email path.
+  Capture calls this.
+- **`POST /api/create-payment-intent`** `{ amount }` → `{ clientSecret }`.
+  Optional `stripeAccount`. Optional `method: "tap_to_pay"` mints a
+  `card_present` intent for Terminal. Staff Wallet capture does not call it.
+- **`POST /api/connection-token`** → `{ secret, locationId }`. Optional
+  `amount` (usd cents) also returns `{ clientSecret }` for a Terminal
+  PaymentIntent. Optional `stripeAccount`. Requires a Terminal location
+  (`STRIPE_TERMINAL_LOCATION_ID`, created at Stripe → Terminal → Locations).
+  Redeploy `azure-function/` after changing this.
+
+v1 staff confirmation: **`GET /api/payment-status?sessionId=`** (or `giftId`).
+Amounts under 50 cents or over 10_000_000 cents are rejected. Card
+`4242 4242 4242 4242` is the Stripe test charge; see
+`azure-function/README.md`.
+
+CloudKit is not opened at launch and is not used for payment settings. Secret
+keys never sit on iOS. No QR codes in this pass.
 
 ### Wiring Tap to Pay
 
+**Development devices only.** Do not send Apple Tap to Pay videos until Collect
+actually opens the hold-card UI on a physical iPhone.
+
+Needs **both** the Apple entitlement and Stripe Terminal. Simulator and a
+missing grant alert *“Tap to Pay needs a registered iPhone and Apple
+development entitlement”* and stay on What. See [TAP_TO_PAY.md](TAP_TO_PAY.md).
+
+The iOS app **does not** hardcode Terminal location ids or secret keys. Location
+comes from Azure env `STRIPE_TERMINAL_LOCATION_ID`. `sk_` never sits in Settings.
+
 1. Request `com.apple.developer.proximity-reader.payment.acceptance` from Apple.
-2. Uncomment the key in `FieldForge.entitlements` (leaving it in without the
-   grant fails code signing).
-3. Add `TAP_TO_PAY_ENABLED` to `SWIFT_ACTIVE_COMPILATION_CONDITIONS`.
-4. Conform a wrapper around your payment platform's SDK to `TapToPayBackend` —
-   three methods — and pass it to `PaymentCoordinator`.
+2. The key is in `FieldForge.entitlements` for development signing. A missing
+   grant must not crash — collect is refused before Terminal APIs run.
+3. Stripe Terminal is already the app's one Swift package. It is not
+   initialised at launch. Collect is the only entry.
+4. Azure Function App `fieldforgepay`: keep `STRIPE_SECRET_KEY` (existing test
+   key). Set `STRIPE_TERMINAL_LOCATION_ID` from Stripe Dashboard → Terminal →
+   Locations. `POST /api/connection-token` returns `{ secret, locationId }` and
+   mints the token with that location; 400 if the env is missing. A tap-to-pay
+   PaymentIntent (optional `amount` on that route, or `method: "tap_to_pay"` on
+   `create-payment-intent`) carries the same location. Pay-link routes are
+   unchanged.
+
+#### End-to-end on a registered iPhone
+
+`discoverReaders` aborted (SIGABRT / `pthread_kill`) when it ran on the main
+thread with the amount keyboard still up, then finished twice. Stripe / Apple
+Tap to Pay also throw **NSException** while presenting UI; Xcode **All
+Exceptions** stops there even though FieldForge catches them.
+
+1. Set `STRIPE_TERMINAL_LOCATION_ID` on Azure `fieldforgepay` (the Test
+   Terminal location already created in the Dashboard). Never put that id in
+   the iOS project.
+2. Republish `azure-function/`.
+3. Stop Xcode. Disable **All Exceptions**. Delete FieldForge from the iPhone.
+4. Install this build and **launch from the icon** (no debugger).
+5. Capture → gift → **Tap to Pay** → **Collect**. First run accepts Apple /
+   Stripe Tap to Pay terms. Hold a **physical contactless card** to the **top
+   of the phone**.
+6. Gift is received only after PaymentIntent `succeeded`; then Document is
+   allowed. Cancel / fail stay on What. Today always paints (collect-in-flight
+   is cleared at launch). CloudKit is not opened at launch.
+
+Staff Wallet stays off. Text and email pay links stay. See
+[TAP_TO_PAY.md](TAP_TO_PAY.md).
 
 ### Genuinely unfinished
 

@@ -97,6 +97,7 @@ final class AppEnvironment {
     func performLaunchTasks() async {
         NotificationScheduler.registerCategories()
         SeedData.bootstrapIfNeeded(context: container.mainContext)
+        StatusMigration.migrateIfNeeded(context: container.mainContext)
         resolveActiveOrganizationIfNeeded()
 
         outbox.refreshCounts()
@@ -105,8 +106,15 @@ final class AppEnvironment {
         async let productLoad: Void = store.loadProducts()
         _ = await (entitlementRefresh, productLoad)
 
-        await sharedWarmth.refreshState(isEnabled: entitlements.isSharingActive)
-        await sharedWarmth.sync()
+        // Never open CloudKit at launch. Sharing creates the container lazily
+        // when the Team screen (or an explicit share action) asks for it.
+        await sharedWarmth.refreshState(isEnabled: false)
+
+        // Re-read local Stripe settings (UserDefaults + Keychain, not CloudKit)
+        // so a backend URL saved last session turns off the SIMULATED label.
+        // Fetch the platform pk_ only if this iPhone has none stored.
+        await StripePaymentSettings.shared.refreshPublicConfigIfNeeded()
+        payments.reloadProcessor()
 
         // Drain anything left from last time before the staffer notices it is
         // there. If they are offline this is a no-op and costs nothing.
@@ -115,11 +123,8 @@ final class AppEnvironment {
         await reconcileReminders()
     }
 
-    /// Warms up expensive hardware at the start of a walking route, on request
-    /// rather than automatically — nobody wants their card reader initialising
-    /// while they are at their desk.
+    /// Route start. Does **not** initialise Stripe Terminal — Collect does that.
     func prepareForRoute() async {
-        await payments.prepareForRoute()
         _ = await location.currentLocation()
     }
 
@@ -151,6 +156,23 @@ final class AppEnvironment {
     var needsOrganizationSetup: Bool {
         guard let organization = activeOrganization() else { return true }
         return !organization.isReadyToIssueDocuments
+    }
+
+    /// ZIP the map, Today, and route prefer. Editable on the organization.
+    var focusPostalCode: String {
+        PostalCode.normalize(activeOrganization()?.defaultFocusPostalCode ?? "")
+            .trimmedOrNil ?? PostalCode.defaultFocus
+    }
+
+    func recordCrew(_ action: CrewAction, qualifier: String = "") {
+        CrewLedger.record(
+            action,
+            staffDisplayName: staffDisplayName,
+            organization: activeOrganization(),
+            qualifier: qualifier,
+            context: container.mainContext
+        )
+        try? container.mainContext.save()
     }
 
     // MARK: Team projection
@@ -196,10 +218,51 @@ final class AppEnvironment {
         }
     }
 
+    // MARK: Live process instance
+
+    /// Installed by `BootView` after the first Today frame. Nil until then so
+    /// launch never constructs Terminal or blocks on Persistence in `@State`.
+    private static var _installed: AppEnvironment?
+
+    /// Readable from EnvironmentKey without hopping the main actor.
+    nonisolated(unsafe) fileprivate static var gate: AppEnvironment?
+
+    static var installed: AppEnvironment? { _installed }
+
+    static func install(_ environment: AppEnvironment) {
+        _installed = environment
+        gate = environment
+    }
+
+    /// The one environment the running app uses once boot succeeds.
+    /// Must not create Stripe Terminal. CloudKit stays off.
+    static var shared: AppEnvironment {
+        if let _installed { return _installed }
+        TapToPaySession.recoverIfDirty()
+        if let opened = Persistence.open(cloudKitEnabled: false) {
+            let env = AppEnvironment(container: opened.container, persistenceMode: opened.mode)
+            install(env)
+            return env
+        }
+        if let container = try? ModelContainer(
+            for: Persistence.schema,
+            configurations: Persistence.inMemoryConfiguration
+        ) {
+            let env = AppEnvironment(container: container, persistenceMode: .ephemeral)
+            install(env)
+            return env
+        }
+        let container = Persistence.previewContainer(seeded: false)
+        let env = AppEnvironment(container: container, persistenceMode: .ephemeral)
+        install(env)
+        return env
+    }
+
     // MARK: Previews
 
     /// A fully wired environment over an in-memory, seeded store. Every preview
     /// in the project uses this, which is why they all show real data.
+    /// Never called from `EnvironmentKey.defaultValue`.
     static func preview(tier: Tier = .free) -> AppEnvironment {
         let container = Persistence.previewContainer()
         let environment = AppEnvironment(container: container, persistenceMode: .localOnly)
@@ -217,16 +280,16 @@ final class AppEnvironment {
 
 /// Written out longhand rather than with the `@Entry` macro so the project
 /// builds on any Xcode that supports iOS 17, not only the newest one.
+///
+/// SwiftUI always evaluates `defaultValue` while building the view graph.
+/// It must return the live shared instance — no trap, no `preview()`, no
+/// second container.
 private struct AppEnvironmentKey: EnvironmentKey {
-    /// A preview environment rather than a crash. A view that forgets the
-    /// injection — a stray preview, a snapshot test — still renders instead of
-    /// trapping, and the seeded store makes the mistake obvious on screen.
     static var defaultValue: AppEnvironment {
-        // `EnvironmentKey.defaultValue` is a nonisolated requirement, but
-        // building an `AppEnvironment` is main-actor work. Environment values
-        // are only ever read during view evaluation, which is on the main
-        // actor, so asserting that is correct rather than merely convenient.
-        MainActor.assumeIsolated { AppEnvironment.preview() }
+        if let env = AppEnvironment.gate { return env }
+        // BootView installs before RootView. Previews inject `.preview()`.
+        // Never call Stripe Terminal or assumeIsolated here.
+        return AppEnvironment.gate!
     }
 }
 

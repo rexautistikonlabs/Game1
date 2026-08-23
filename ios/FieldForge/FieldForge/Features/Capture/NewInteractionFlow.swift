@@ -38,6 +38,9 @@ struct NewInteractionFlow: View {
     @State private var isConfirmingCancel = false
     @State private var committed: DraftCommitter.Result?
     @State private var personalNote = ""
+    @State private var isCollectingTapToPay = false
+    @State private var showsTapToPayDeviceAlert = false
+    @State private var collectFailureAlert: String?
 
     enum Step: Int, CaseIterable, Identifiable {
         case who, what, document, deliver
@@ -80,7 +83,9 @@ struct NewInteractionFlow: View {
                         case .who:
                             WhoStepView(draft: $draft)
                         case .what:
-                            GiftStepView(draft: $draft)
+                            GiftStepView(draft: $draft, onCollectTapToPay: {
+                                Task { await collectTapToPayThenAdvance() }
+                            })
                         case .document:
                             DocumentStepView(draft: $draft, personalNote: $personalNote)
                         case .deliver:
@@ -138,6 +143,30 @@ struct NewInteractionFlow: View {
             } message: {
                 Text("Keeping it means FieldForge will offer to pick this up next time you open the app.")
             }
+            .alert(
+                TapToPayCollectUI.deviceOrEntitlementMessage,
+                isPresented: $showsTapToPayDeviceAlert
+            ) {
+                Button("OK", role: .cancel) {}
+            }
+            .alert(
+                "Tap to Pay",
+                isPresented: Binding(
+                    get: { collectFailureAlert != nil },
+                    set: { if !$0 { collectFailureAlert = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { collectFailureAlert = nil }
+            } message: {
+                Text(collectFailureAlert ?? TapToPayCollectUI.contactlessFailureMessage)
+            }
+            .overlay {
+                if isCollectingTapToPay {
+                    TapToPayHoldCardOverlay {
+                        cancelTapToPayCollect()
+                    }
+                }
+            }
         }
         .task { await prepare() }
         // The whole promise of never losing a signature, a note, or a photo
@@ -155,13 +184,14 @@ struct NewInteractionFlow: View {
         } else {
             var fresh = DocumentDraft()
             fresh.fundName = app.activeOrganization()?.defaultFundName ?? ""
-            fresh.method = app.reachability.isOnline ? .applePay : .cash
+            fresh.method = .cash
             draft = fresh
         }
 
         // Jump straight to the first incomplete step when resuming, rather than
-        // making the staffer tap through what they already filled in.
-        if draft.hasWhat {
+        // making the staffer tap through what they already filled in. Unpaid
+        // Tap to Pay / pay-link gifts stay on What.
+        if draft.canAdvanceToDocument {
             step = .document
         } else if draft.hasWho {
             step = .what
@@ -183,8 +213,8 @@ struct NewInteractionFlow: View {
     private var reachableSteps: Set<Step> {
         var reachable: Set<Step> = [.who]
         if draft.hasWho { reachable.insert(.what) }
-        if draft.hasWho { reachable.insert(.document) }
-        if committed != nil { reachable.insert(.deliver) }
+        if draft.canAdvanceToDocument { reachable.insert(.document) }
+        if committed != nil || (!draft.hasWhat && draft.hasWho) { reachable.insert(.deliver) }
         return reachable
     }
 
@@ -207,37 +237,76 @@ struct NewInteractionFlow: View {
             }
 
         case .what:
-            VStack(spacing: Space.sm) {
-                PrimaryButton(
-                    title: draft.hasWhat ? "Next" : "Log the visit only",
-                    systemImage: draft.hasWhat ? "arrow.right" : "checkmark"
-                ) {
-                    if draft.hasWhat {
-                        advance(to: .document)
-                    } else {
-                        commitVisitOnly()
+            whatPrimaryAction
+
+        case .document:
+            if draft.method.requiresClearedPaymentBeforeDocument, !draft.hasSucceededElectronicPayment {
+                VStack(spacing: Space.sm) {
+                    Text("This gift is unpaid. Go back — a letter waits until Stripe or Tap to Pay reports succeeded.")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                    PrimaryButton(
+                        title: "Back to What",
+                        systemImage: "arrow.left",
+                        role: .secondary
+                    ) {
+                        advance(to: .what)
                     }
                 }
-                if draft.hasWhat {
-                    Text("You can still change the document type on the next step.")
+            } else if draft.method.requiresNetwork, !draft.isPaymentConfirmed {
+                VStack(spacing: Space.sm) {
+                    PrimaryButton(
+                        title: "Record unpaid gift",
+                        systemImage: "tray.and.arrow.down.fill",
+                        role: .secondary,
+                        isLoading: isCommitting,
+                        isEnabled: draft.hasWhat && !isCommitting
+                    ) {
+                        perform(issueDocument: false) { _ in
+                            Haptics.success()
+                            advance(to: .deliver)
+                        }
+                    }
+                    Text("A letter can be issued after Stripe reports succeeded. Pull to refresh or tap I got paid on the gift.")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+            } else {
+                VStack(spacing: Space.sm) {
+                    PrimaryButton(
+                        title: issueButtonTitle,
+                        systemImage: "signature",
+                        isLoading: isCommitting,
+                        isEnabled: canIssue
+                    ) {
+                        commitWithDocument()
+                    }
+                    PrimaryButton(
+                        title: "Save gift without a letter",
+                        systemImage: "tray.and.arrow.down.fill",
+                        role: .secondary,
+                        isLoading: isCommitting,
+                        isEnabled: draft.hasWhat && !isCommitting
+                    ) {
+                        perform(issueDocument: false) { _ in
+                            Haptics.success()
+                            advance(to: .deliver)
+                        }
+                    }
+                    Text("Received is not a letter. Issue a tax letter only after the gift is received or deposited.")
                         .font(Type.caption)
                         .foregroundStyle(Palette.textTertiary)
                 }
             }
 
-        case .document:
-            PrimaryButton(
-                title: issueButtonTitle,
-                systemImage: "signature",
-                isLoading: isCommitting,
-                isEnabled: canIssue
-            ) {
-                commitWithDocument()
-            }
-
         case .deliver:
-            PrimaryButton(title: "Done", systemImage: "checkmark") {
-                finish(clearingDraft: true)
+            PrimaryButton(
+                title: "Done",
+                systemImage: "checkmark",
+                isLoading: isCommitting,
+                isEnabled: draft.hasRequiredNextAction && !isCommitting
+            ) {
+                finishCapture()
             }
         }
     }
@@ -248,8 +317,139 @@ struct NewInteractionFlow: View {
 
     private var canIssue: Bool {
         guard !isCommitting, draft.hasWhat else { return false }
-        guard let organization = app.activeOrganization() else { return false }
-        return organization.isReadyToIssueDocuments
+        guard let organization = app.activeOrganization(), organization.isReadyToIssueDocuments else { return false }
+        if draft.method.requiresClearedPaymentBeforeDocument {
+            guard draft.hasSucceededElectronicPayment else { return false }
+        } else if draft.method.requiresNetwork {
+            guard draft.isPaymentConfirmed else { return false }
+            if draft.documentKind == .letter {
+                guard draft.paymentIntentStatus == "succeeded" else { return false }
+            }
+        }
+        if draft.documentKind == .letter, draft.method.requiresStripeSucceededForLetter {
+            guard draft.paymentIntentStatus == "succeeded" else { return false }
+        }
+        if draft.method == .pledge && draft.documentKind == .letter { return false }
+        return true
+    }
+
+    @ViewBuilder
+    private var whatPrimaryAction: some View {
+        let tapUnpaid = draft.method == .tapToPay
+            && draft.hasWhat
+            && !draft.hasSucceededElectronicPayment
+        let payLinkUnpaid = draft.method.isPayLink
+            && draft.hasWhat
+            && !draft.hasSucceededElectronicPayment
+        VStack(spacing: Space.sm) {
+            if tapUnpaid {
+                PrimaryButton(
+                    title: "Collect",
+                    systemImage: "wave.3.right.circle.fill",
+                    isLoading: isCollectingTapToPay,
+                    isEnabled: draft.amount.isPositive && !isCollectingTapToPay
+                ) {
+                    Task { await collectTapToPayThenAdvance() }
+                }
+                Text(TapToPayCollectUI.holdCardPrompt)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textSecondary)
+            } else if payLinkUnpaid {
+                PrimaryButton(
+                    title: "Next",
+                    systemImage: "arrow.right",
+                    isEnabled: false
+                ) {}
+                Text("Send a pay link, then tap I got paid. Document waits until Stripe reports succeeded.")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textTertiary)
+            } else {
+                PrimaryButton(
+                    title: draft.hasWhat ? "Next" : "Log the visit only",
+                    systemImage: "arrow.right",
+                    isEnabled: !isCollectingTapToPay
+                ) {
+                    if draft.hasWhat {
+                        if draft.canAdvanceToDocument {
+                            advance(to: .document)
+                        }
+                    } else {
+                        advance(to: .deliver)
+                    }
+                }
+                if draft.hasWhat {
+                    Text("You can still change the document type on the next step. A received gift does not generate a letter by itself.")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textTertiary)
+                } else {
+                    Text("Next: pick exactly one next action. A visit is not saved until you do.")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textTertiary)
+                }
+            }
+        }
+    }
+
+    private func collectTapToPayThenAdvance() async {
+        guard !isCollectingTapToPay else { return }
+        guard draft.method == .tapToPay, draft.hasWhat else { return }
+        guard let organization = app.activeOrganization() else {
+            errorMessage = "Add your organization in Settings first."
+            return
+        }
+        errorMessage = nil
+
+        if TapToPayProvider.shouldRefuseCollectOnThisRuntime {
+            showsTapToPayDeviceAlert = true
+            return
+        }
+
+        // Keyboard under the Tap to Pay sheet crashed discoverReaders.
+        TapToPayKeyboard.resignNow()
+
+        isCollectingTapToPay = true
+        defer { isCollectingTapToPay = false }
+
+        let outcome = await app.payments.collect(
+            method: .tapToPay,
+            request: app.payments.request(for: draft, organization: organization)
+        )
+
+        switch outcome {
+        case .captured(let receipt):
+            guard PaymentCoordinator.shouldMarkReceived(outcome) else {
+                collectFailureAlert = TapToPayCollectUI.contactlessFailureMessage
+                return
+            }
+            app.payments.apply(receipt, to: &draft)
+            guard draft.hasSucceededElectronicPayment else {
+                collectFailureAlert = TapToPayCollectUI.contactlessFailureMessage
+                return
+            }
+            Haptics.success()
+            advance(to: .document)
+        case .cancelled:
+            break
+        case .failed(let failure):
+            if failure.diagnosticCode == TapToPayCollectUI.deviceOrEntitlementCode {
+                showsTapToPayDeviceAlert = true
+            } else {
+                collectFailureAlert = failure.message
+            }
+        case .unavailable(let reason):
+            switch reason {
+            case .tapToPayEntitlementMissing, .tapToPayUnsupportedDevice:
+                showsTapToPayDeviceAlert = true
+            default:
+                collectFailureAlert = reason.explanation
+            }
+        }
+    }
+
+    /// Overlay Cancel. Must return to What immediately; do not wait on Stripe.
+    private func cancelTapToPayCollect() {
+        isCollectingTapToPay = false
+        Task { await app.payments.cancelTapToPay() }
     }
 
     private func advance(to next: Step) {
@@ -260,10 +460,16 @@ struct NewInteractionFlow: View {
 
     // MARK: Committing
 
-    private func commitVisitOnly() {
+    private func finishCapture() {
+        guard draft.hasRequiredNextAction else {
+            errorMessage = "Pick a next action to finish this visit."
+            return
+        }
+        if committed != nil {
+            finish(clearingDraft: true)
+            return
+        }
         perform(issueDocument: false) { _ in
-            // A visit with no gift has nothing to deliver, so the flow ends
-            // here rather than showing an empty delivery step.
             Haptics.success()
             finish(clearingDraft: true)
         }
@@ -390,6 +596,39 @@ private struct StepIndicator: View {
         if isPast { return Palette.positive }
         if isCurrent { return Palette.brand }
         return Palette.separator
+    }
+}
+
+/// Full-screen prompt while Stripe Terminal collects a contactless card.
+private struct TapToPayHoldCardOverlay: View {
+    let onCancel: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+            VStack(spacing: Space.lg) {
+                Image(systemName: "wave.3.right.circle.fill")
+                    .font(.system(size: 48, weight: .semibold))
+                    .foregroundStyle(Palette.onAccent)
+                Text(TapToPayCollectUI.holdCardPrompt)
+                    .font(Type.section)
+                    .foregroundStyle(Palette.onAccent)
+                    .multilineTextAlignment(.center)
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(Palette.onAccent)
+                Button("Cancel") { onCancel() }
+                    .font(Type.secondary.weight(.semibold))
+                    .foregroundStyle(Palette.onAccent)
+                    .minimumTapTarget()
+            }
+            .padding(Space.xl)
+            .frame(maxWidth: 320)
+            .background(Palette.brand, in: RoundedRectangle(cornerRadius: Space.corner, style: .continuous))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(TapToPayCollectUI.holdCardPrompt)
     }
 }
 

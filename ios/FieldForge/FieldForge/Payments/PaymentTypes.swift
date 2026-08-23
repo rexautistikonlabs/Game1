@@ -28,7 +28,93 @@
 //
 
 import Foundation
+import os
 import PassKit
+import UIKit
+
+/// Copy and codes for the Tap to Pay collect path. Selecting the method is
+/// not a charge; Collect / Next starts Terminal.
+enum TapToPayCollectUI {
+    static let holdCardPrompt = "Hold card to top of iPhone"
+    static let deviceOrEntitlementMessage =
+        "Tap to Pay needs a registered iPhone and Apple development entitlement"
+    static let deviceOrEntitlementCode = "tap-to-pay-device"
+    static let timeoutSeconds: TimeInterval = 60
+    /// Stripe Terminal contactless, not a second iPhone’s Apple Pay Wallet.
+    static let contactlessFailureMessage =
+        "The tap did not succeed. Hold a contactless card to the top of this iPhone (Stripe Terminal test cards in test mode). Nothing was charged."
+    static let missingLocationMessage =
+        "Create a Terminal location in Stripe Dashboard and set STRIPE_TERMINAL_LOCATION_ID on Azure."
+    static let missingLocationCode = "tap-to-pay-location"
+
+    /// Stripe, PassKit, and `CancellationError` all arrive as cancellations.
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let ns = error as NSError
+        if ns.code == NSUserCancelledError { return true }
+        let text = error.localizedDescription.lowercased()
+        if text.contains("cancel") { return true }
+        // Stripe Terminal `ErrorCode.canceled` is 2020 in current SDKs.
+        if ns.domain.localizedCaseInsensitiveContains("StripeTerminal"), ns.code == 2020 {
+            return true
+        }
+        return false
+    }
+}
+
+/// Dismiss the first responder before Stripe / Apple Tap to Pay UI.
+enum TapToPayKeyboard {
+    /// Keyboard animation is ~0.35s. ProximityReader aborts if a first
+    /// responder is still up when `discoverReaders` starts.
+    static let resignSettlingMilliseconds: UInt64 = 400
+
+    @MainActor
+    static func resignNow() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+    }
+
+    @MainActor
+    static func resignBeforeCollect() async {
+        resignNow()
+        try? await Task.sleep(for: .milliseconds(resignSettlingMilliseconds))
+    }
+}
+
+/// First claim wins. Stripe may call the discover completion with nil after a
+/// reader; a second claim is ignored.
+final class TapToPayCallbackGate: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock(initialState: false)
+
+    func claim() -> Bool {
+        lock.withLock { taken in
+            if taken { return false }
+            taken = true
+            return true
+        }
+    }
+}
+
+enum TapToPayCollectError: LocalizedError {
+    case deviceOrEntitlement
+    case timedOut
+    case missingLocation
+
+    var errorDescription: String? {
+        switch self {
+        case .deviceOrEntitlement:
+            return TapToPayCollectUI.deviceOrEntitlementMessage
+        case .timedOut:
+            return "The tap timed out. Nothing was charged."
+        case .missingLocation:
+            return TapToPayCollectUI.missingLocationMessage
+        }
+    }
+}
 
 /// The outcome of asking for money.
 enum PaymentOutcome: Equatable {
@@ -61,6 +147,8 @@ struct PaymentReceipt: Equatable {
     /// True when a processor confirmed settlement rather than the app merely
     /// receiving a token. Drives `Gift.isPaymentConfirmed`.
     var isSettled: Bool
+    /// Stripe PaymentIntent status. Tax letters require `"succeeded"`.
+    var paymentIntentStatus: String
 
     init(
         amount: Money,
@@ -71,7 +159,8 @@ struct PaymentReceipt: Equatable {
         payerPhone: String = "",
         authorizedAt: Date = .now,
         method: GiftMethod = .applePay,
-        isSettled: Bool = false
+        isSettled: Bool = false,
+        paymentIntentStatus: String = ""
     ) {
         self.amount = amount
         self.transactionIdentifier = transactionIdentifier
@@ -82,6 +171,7 @@ struct PaymentReceipt: Equatable {
         self.authorizedAt = authorizedAt
         self.method = method
         self.isSettled = isSettled
+        self.paymentIntentStatus = paymentIntentStatus
     }
 }
 
@@ -131,11 +221,11 @@ enum PaymentUnavailableReason: Equatable {
         case .applePayNotSetUp:
             return "This iPhone has no cards in Wallet. Record the gift manually instead."
         case .merchantNotConfigured:
-            return "Apple Pay is not set up for this organization yet. An admin needs to add a merchant ID."
+            return "Apple Pay is not ready yet. Use cash or a cheque, or try again on a connection."
         case .tapToPayUnsupportedDevice:
             return "Tap to Pay needs iPhone XS or later. Use Apple Pay or record the gift manually."
         case .tapToPayEntitlementMissing:
-            return "Tap to Pay is not enabled for this build of the app."
+            return TapToPayCollectUI.deviceOrEntitlementMessage
         case .tapToPayNotProvisioned:
             return "This iPhone has not finished Tap to Pay setup. Connect to Wi-Fi and try again."
         }
@@ -168,6 +258,8 @@ struct PaymentRequest {
     /// who has already tapped is happy to share it.
     var requestsPayerContact: Bool = true
     var requestsBillingAddress: Bool = false
+    /// Connected Express account (`acct_…`). Nil charges the platform.
+    var stripeAccount: String? = nil
 }
 
 /// Common interface for every way of taking money.

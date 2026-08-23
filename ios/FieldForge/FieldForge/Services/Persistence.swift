@@ -35,11 +35,18 @@ enum Persistence {
         FollowUp.self,
         Attachment.self,
         OutboxItem.self,
+        OpenDoorListing.self,
+        LetterTemplate.self,
+        InKindNeed.self,
+        InKindOffer.self,
+        CrewEvent.self,
+        CourtesyPing.self,
     ])
 
-    /// The narrow projection the team sees. One model, by design.
+    /// Narrow projections the team (and, later, courtesy network) may see.
     static let sharedSchema = Schema([
         SharedContactProjection.self,
+        SharedCourtesyProjection.self,
     ])
 
     /// Both, for building the container. A single `ModelContext` can read
@@ -55,7 +62,14 @@ enum Persistence {
         FollowUp.self,
         Attachment.self,
         OutboxItem.self,
+        OpenDoorListing.self,
+        LetterTemplate.self,
+        InKindNeed.self,
+        InKindOffer.self,
+        CrewEvent.self,
+        CourtesyPing.self,
         SharedContactProjection.self,
+        SharedCourtesyProjection.self,
     ])
 
     /// How the container was actually opened, so the UI can be honest about it.
@@ -113,7 +127,7 @@ enum Persistence {
     ///   only attached for organizations sharing team memory; a solo free-tier
     ///   user gets a purely local store and never sees an iCloud prompt.
     @MainActor
-    static func open(cloudKitEnabled: Bool) -> Opened {
+    static func open(cloudKitEnabled: Bool) -> Opened? {
         // 1. The intended configuration: the private store, optionally mirrored
         //    to the user's own private CloudKit database, plus the projection
         //    store which is never mirrored by SwiftData.
@@ -122,7 +136,7 @@ enum Persistence {
             schema: privateSchema,
             url: storeURL,
             cloudKitDatabase: cloudKitEnabled
-                ? .private("iCloud.org.example.fieldforge")
+                ? .private("iCloud.org.rexautistikonlabs.fieldforge")
                 : .none
         )
         if let container = try? ModelContainer(
@@ -162,17 +176,16 @@ enum Persistence {
 
         // 4. Nothing on disk works — a full disk, most likely. Run in memory so
         //    the staffer can still produce the receipt in front of them, and
-        //    warn loudly that it will not survive.
-        let memory = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        do {
-            let container = try ModelContainer(for: schema, configurations: memory)
+        //    warn loudly that it will not survive. Never trap: a white screen
+        //    at launch is worse than ephemeral storage.
+        let memory = inMemoryConfiguration
+        if let container = try? ModelContainer(for: schema, configurations: memory) {
             AppLog.persistence.critical("Running in memory only — data will not persist")
             return Opened(container: container, mode: .ephemeral)
-        } catch {
-            // A container that cannot even be built in memory means the schema
-            // is invalid, which is a programmer error and not recoverable.
-            fatalError("Schema is invalid: \(error)")
         }
+
+        AppLog.persistence.critical("Could not open any store, including in-memory")
+        return nil
     }
 
     /// Renames the store (and its -wal/-shm siblings) with a timestamp.
@@ -242,18 +255,36 @@ enum Persistence {
         isProEnabled
     }
 
-    /// In-memory container for previews and tests, pre-seeded with the sample
-    /// organization so every SwiftUI preview in the project renders real data.
+    /// Launch never attaches CloudKit. Team sharing creates a container later.
+    static let attachesCloudKitAtLaunch = false
+
+    /// In-memory, never CloudKit. Previews, tests, and the last-resort
+    /// ephemeral fallback all use this so a CloudKit-entitled build does not
+    /// try to validate a development schema against `/dev/null`.
+    static var inMemoryConfiguration: ModelConfiguration {
+        ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: true,
+            cloudKitDatabase: .none
+        )
+    }
+
+    /// In-memory container for SwiftUI previews and unit tests only.
+    /// Never called from `FieldForgeApp` or `EnvironmentKey.defaultValue`.
     @MainActor
     static func previewContainer(seeded: Bool = true) -> ModelContainer {
-        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        // Force-try is acceptable here: this path is only reached from previews
-        // and tests, and a failure means the schema is wrong.
-        let container = try! ModelContainer(for: schema, configurations: configuration)
-        if seeded {
-            SeedData.populate(context: container.mainContext)
+        do {
+            let container = try ModelContainer(for: schema, configurations: inMemoryConfiguration)
+            if seeded {
+                SeedData.populate(context: container.mainContext)
+            }
+            return container
+        } catch {
+            AppLog.persistence.error(
+                "Preview/test container failed: \(error.localizedDescription, privacy: .public)"
+            )
+            preconditionFailure("Preview/test store could not be created: \(error)")
         }
-        return container
     }
 }
 

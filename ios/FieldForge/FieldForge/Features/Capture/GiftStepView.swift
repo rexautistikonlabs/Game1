@@ -4,13 +4,15 @@
 //
 //  Step 2: what did they give?
 //
-//  Ordering here is the feature. When there is signal, Apple Pay and Tap to Pay
-//  come first, because a card in hand is a gift that will not evaporate on the
-//  walk home. When there is no signal, cash and cheque come first and the dead
-//  electronic buttons drop below with a plain explanation. A staffer should
-//  never have to scroll past something that cannot work.
+//  Ordering here is the feature. A donor pays on their own phone via a texted
+//  or emailed Stripe link. This iPhone’s Wallet is not a charge path — staff
+//  Apple Pay is hidden so the operator cannot charge their own card by
+//  mistake. Tap to Pay stays Not enabled until Apple grants the entitlement
+//  and is not a charge button. When there is no signal, cash and cheque come
+//  first.
 //
 
+import MessageUI
 import PhotosUI
 import SwiftData
 import SwiftUI
@@ -19,6 +21,8 @@ import UIKit
 struct GiftStepView: View {
 
     @Binding var draft: DocumentDraft
+    /// Starts Terminal collect. Selecting Tap to Pay is not a charge.
+    var onCollectTapToPay: (() -> Void)? = nil
 
     @Environment(\.appEnvironment) private var app
 
@@ -26,7 +30,17 @@ struct GiftStepView: View {
 
     @State private var paymentError: String?
     @State private var showsAdvanced = false
-    @State private var isTakingPayment = false
+    @State private var isCreatingPayLink = false
+    @State private var creatingPayLinkChannel: PayLinkChannel?
+    @State private var isCheckingPayStatus = false
+    @State private var isPresentingMessage = false
+    @State private var isPresentingMail = false
+    @State private var isAskingForPhone = false
+    @State private var isAskingForEmail = false
+    @State private var phonePrompt = ""
+    @State private var emailPrompt = ""
+    @State private var pendingPayLink: PayLink?
+    @State private var pendingPayLinkMail: MailComposer.Message?
     @State private var isPresentingCamera = false
     @State private var isPresentingPhotoPicker = false
     @State private var pickedPhoto: PhotosPickerItem?
@@ -65,13 +79,72 @@ struct GiftStepView: View {
             methodSection
             fundSection
 
-            if !draft.isInKind, !draft.isPaymentConfirmed {
-                electronicPaymentSection
+            if !draft.isInKind {
+                VStack(alignment: .leading, spacing: Space.lg) {
+                    donorPhoneSection
+                    donorEmailSection
+                    payLinkSection
+                    if !draft.isPaymentConfirmed {
+                        manualPaymentReassurance
+                    }
+                }
             }
 
             advancedSection
         }
-        .task { reloadItemPhotos() }
+        .task {
+            reloadItemPhotos()
+            syncPhoneFromContact()
+            syncEmailFromContact()
+        }
+        .refreshable { await refreshPayStatus() }
+        .sheet(isPresented: $isPresentingMessage) {
+            if let link = pendingPayLink {
+                MessageComposer(
+                    recipients: [resolvedPhone],
+                    body: PayLinkMessage.body(
+                        organizationName: app.activeOrganization()?.name ?? "",
+                        amount: draft.amount,
+                        url: link.url
+                    )
+                ) { _ in
+                    isPresentingMessage = false
+                }
+            }
+        }
+        .sheet(isPresented: $isPresentingMail) {
+            if let message = pendingPayLinkMail {
+                MailComposer(message: message) { _, _ in
+                    isPresentingMail = false
+                }
+            }
+        }
+        .alert("Mobile number", isPresented: $isAskingForPhone) {
+            TextField("Phone", text: $phonePrompt)
+                .keyboardType(.phonePad)
+            Button("Text pay link") {
+                draft.newContact.phone = phonePrompt
+                draft.touch()
+                Task { await sendPayLink(channel: .sms) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The pay link is sent as a text. Add a number for this contact first.")
+        }
+        .alert("Email", isPresented: $isAskingForEmail) {
+            TextField("Email", text: $emailPrompt)
+                .keyboardType(.emailAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("Email pay link") {
+                draft.newContact.email = emailPrompt
+                draft.touch()
+                Task { await sendPayLink(channel: .email) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The pay link is sent as an email. Add an address for this contact first.")
+        }
         .sheet(isPresented: $isPresentingCamera) {
             ItemCameraView { data in
                 savePhoto(data)
@@ -140,6 +213,24 @@ struct GiftStepView: View {
                 kind: .info,
                 message: "The letter will describe the items but will not state a value. Valuing a donated item is the donor's job, not the charity's — that is what the IRS expects."
             )
+
+            Toggle("This is leftover inventory", isOn: Binding(
+                get: { draft.leftoverInventory },
+                set: { draft.isLeftoverInventory = $0; draft.touch() }
+            ))
+            if draft.leftoverInventory {
+                Picker("Category", selection: Binding(
+                    get: { draft.leftoverCategory },
+                    set: { draft.leftoverCategoryRawValue = $0.rawValue; draft.touch() }
+                )) {
+                    ForEach(InKindCategory.allCases) { category in
+                        Text(category.label).tag(category)
+                    }
+                }
+                Text("Logs an offer so Today can match it against what we need. No payment.")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textSecondary)
+            }
 
             inKindPhotoStrip
         }
@@ -364,7 +455,8 @@ struct GiftStepView: View {
                 ForEach(app.payments.methodOptions) { option in
                     MethodTile(
                         option: option,
-                        isSelected: draft.method == option.method
+                        isSelected: draft.method == option.method,
+                        simulatedCaption: methodCaption(option)
                     ) {
                         select(option)
                     }
@@ -393,11 +485,41 @@ struct GiftStepView: View {
                 )
             }
 
+            if draft.method == .tapToPay {
+                tapToPayCollectSection
+            }
+
             if draft.method == .pledge {
                 InlineBanner(
                     kind: .caution,
                     message: "A pledge is a promise, not a gift. FieldForge will issue a pledge confirmation and a reminder to collect it — not a tax acknowledgment."
                 )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tapToPayCollectSection: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            if draft.hasSucceededElectronicPayment {
+                Label("Paid — a letter can be issued.", systemImage: "checkmark.seal.fill")
+                    .font(Type.secondary.weight(.medium))
+                    .foregroundStyle(Palette.positive)
+            } else {
+                Text("Selecting Tap to Pay is not a charge. Collect starts the reader and waits for a card.")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textSecondary)
+                PrimaryButton(
+                    title: "Collect",
+                    systemImage: "wave.3.right.circle.fill",
+                    isLoading: app.payments.inFlightMethod == .tapToPay,
+                    isEnabled: draft.amount.isPositive && app.payments.inFlightMethod == nil
+                ) {
+                    onCollectTapToPay?()
+                }
+                Text(TapToPayCollectUI.holdCardPrompt)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textSecondary)
             }
         }
     }
@@ -431,30 +553,107 @@ struct GiftStepView: View {
         )
     }
 
-    // MARK: Electronic payment
+    // MARK: Donor phone / email + pay link
 
-    /// The take-payment button, shown only when the selected method actually
-    /// needs a card. Tapping it opens the Apple Pay sheet or the tap reader.
+    private var resolvedPhone: String {
+        if let typed = draft.newContact.phone.trimmedOrNil { return typed }
+        return selectedContact?.phone ?? ""
+    }
+
+    private var resolvedEmail: String {
+        if let typed = draft.newContact.email.trimmedOrNil { return typed }
+        return selectedContact?.email ?? ""
+    }
+
+    private var selectedContact: Contact? {
+        guard let id = draft.existingContactID else { return nil }
+        var descriptor = FetchDescriptor<Contact>(predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
+        return try? context.fetch(descriptor).first
+    }
+
+    private var donorPhoneSection: some View {
+        LabeledField(
+            title: "Mobile number",
+            text: Binding(
+                get: { draft.newContact.phone },
+                set: { draft.newContact.phone = $0; draft.touch() }
+            ),
+            placeholder: "To text the pay link",
+            keyboard: .phonePad
+        )
+    }
+
+    private var donorEmailSection: some View {
+        LabeledField(
+            title: "Email",
+            text: Binding(
+                get: { draft.newContact.email },
+                set: { draft.newContact.email = $0; draft.touch() }
+            ),
+            placeholder: "To email the pay link",
+            keyboard: .emailAddress,
+            autocapitalization: .never
+        )
+    }
+
     @ViewBuilder
-    private var electronicPaymentSection: some View {
-        if draft.method.requiresNetwork {
-            VStack(alignment: .leading, spacing: Space.sm) {
+    private var payLinkSection: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            if draft.method.isPayLink, draft.isPaymentConfirmed {
+                Label("Paid — a letter can be issued.", systemImage: "checkmark.seal.fill")
+                    .font(Type.secondary.weight(.medium))
+                    .foregroundStyle(Palette.positive)
+            } else if draft.method.isPayLink, draft.paymentLinkURL != nil {
+                InlineBanner(
+                    kind: .info,
+                    message: "Pay link sent. The gift stays unpaid until Stripe reports succeeded — pull to refresh or tap I got paid."
+                )
                 PrimaryButton(
-                    title: draft.method == .applePay ? "Charge with Apple Pay" : "Take a tap",
-                    systemImage: draft.method.symbolName,
-                    isLoading: isTakingPayment,
-                    isEnabled: draft.amount.isPositive
+                    title: "I got paid",
+                    systemImage: "arrow.clockwise",
+                    isLoading: isCheckingPayStatus,
+                    isEnabled: !isCheckingPayStatus
                 ) {
-                    Task { await takePayment() }
-                }
-
-                if app.payments.isSimulatingPayments {
-                    Text("This build simulates payments. Nothing will actually be charged.")
-                        .font(Type.caption)
-                        .foregroundStyle(Palette.critical)
+                    Task { await refreshPayStatus() }
                 }
             }
-        } else if draft.method == .cash || draft.method == .check {
+
+            if !draft.isPaymentConfirmed {
+                HStack(spacing: Space.sm) {
+                    PrimaryButton(
+                        title: "Text pay link",
+                        systemImage: "message.fill",
+                        isLoading: isCreatingPayLink && creatingPayLinkChannel == .sms,
+                        isEnabled: draft.amount.isPositive && app.payments.canCreatePayLink && !isCreatingPayLink
+                    ) {
+                        requestPayLink(channel: .sms)
+                    }
+                    PrimaryButton(
+                        title: "Email pay link",
+                        systemImage: "envelope.fill",
+                        isLoading: isCreatingPayLink && creatingPayLinkChannel == .email,
+                        isEnabled: draft.amount.isPositive && app.payments.canCreatePayLink && !isCreatingPayLink
+                    ) {
+                        requestPayLink(channel: .email)
+                    }
+                }
+
+                if !app.reachability.isOnline {
+                    Text("Pay links need a connection. Cash and cheques still record.")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+            }
+        }
+    }
+
+    // MARK: Manual methods
+
+    /// Cash and cheque record immediately. Staff Apple Pay is not offered here.
+    @ViewBuilder
+    private var manualPaymentReassurance: some View {
+        if draft.method == .cash || draft.method == .check {
             Label(
                 "Nothing to charge — this records straight away, online or off.",
                 systemImage: "checkmark.circle"
@@ -464,38 +663,186 @@ struct GiftStepView: View {
         }
     }
 
-    private func takePayment() async {
-        guard let organization = app.activeOrganization() else { return }
-        isTakingPayment = true
-        paymentError = nil
-        defer { isTakingPayment = false }
-
-        let request = app.payments.request(for: draft, organization: organization)
-        let outcome = await app.payments.collect(method: draft.method, request: request)
-
-        switch outcome {
-        case .captured(let receipt):
-            app.payments.apply(receipt, to: &draft)
-            Haptics.success()
-
-        case .cancelled:
-            // Not an error. Say nothing.
-            break
-
-        case .failed(let failure):
-            Haptics.warning()
-            paymentError = failure.isRetryable
-                ? failure.message
-                : "\(failure.message) You can still record this as cash, a cheque, or a card taken elsewhere."
-
-        case .unavailable(let reason):
-            Haptics.warning()
-            paymentError = reason.explanation
-            // Move them to something that works rather than leaving them on a
-            // dead method.
-            draft.method = .cash
-            draft.touch()
+    private func methodCaption(_ option: PaymentCoordinator.MethodOption) -> String? {
+        if option.method == .tapToPay, let reason = option.unavailableReason {
+            return reason.shortLabel
         }
+        return nil
+    }
+
+    private func requestPayLink(channel: PayLinkChannel) {
+        paymentError = nil
+        guard draft.amount.isPositive else { return }
+        switch channel {
+        case .sms:
+            if !PayLinkMessage.isUsablePhone(resolvedPhone) {
+                phonePrompt = resolvedPhone
+                isAskingForPhone = true
+                return
+            }
+        case .email:
+            if !PayLinkMessage.isUsableEmail(resolvedEmail) {
+                emailPrompt = resolvedEmail
+                isAskingForEmail = true
+                return
+            }
+        }
+        Task { await sendPayLink(channel: channel) }
+    }
+
+    private func sendPayLink(channel: PayLinkChannel) async {
+        guard let organization = app.activeOrganization() else { return }
+        switch channel {
+        case .sms:
+            guard PayLinkMessage.isUsablePhone(resolvedPhone) else {
+                phonePrompt = resolvedPhone
+                isAskingForPhone = true
+                return
+            }
+        case .email:
+            guard PayLinkMessage.isUsableEmail(resolvedEmail) else {
+                emailPrompt = resolvedEmail
+                isAskingForEmail = true
+                return
+            }
+        }
+        isCreatingPayLink = true
+        creatingPayLinkChannel = channel
+        paymentError = nil
+        defer {
+            isCreatingPayLink = false
+            creatingPayLinkChannel = nil
+        }
+
+        let contactName = selectedContact?.displayName
+            ?? draft.newContact.name.trimmedOrNil
+            ?? draft.newContact.contactPersonName.trimmedOrNil
+            ?? ""
+
+        do {
+            switch channel {
+            case .sms: persistPhoneIfNeeded()
+            case .email: persistEmailIfNeeded()
+            }
+            let link = try await app.payments.createPayLink(
+                for: draft,
+                organization: organization,
+                contactName: contactName,
+                channel: channel
+            )
+            app.payments.applyPayLink(link, to: &draft, channel: channel)
+            pendingPayLink = link
+            switch channel {
+            case .sms: presentPayLinkMessage(link)
+            case .email: presentPayLinkEmail(link)
+            }
+            Haptics.success()
+        } catch {
+            Haptics.warning()
+            paymentError = (error as? LocalizedError)?.errorDescription
+                ?? "Could not create a pay link. Try again on a connection."
+        }
+    }
+
+    private func presentPayLinkMessage(_ link: PayLink) {
+        let body = PayLinkMessage.body(
+            organizationName: app.activeOrganization()?.name ?? "",
+            amount: draft.amount,
+            url: link.url
+        )
+        if MessageComposer.canSendText {
+            isPresentingMessage = true
+        } else if let url = PayLinkMessage.smsURL(phone: resolvedPhone, body: body) {
+            UIApplication.shared.open(url)
+        } else {
+            paymentError = "Messages is not available on this device. Copy the link from the gift once it is saved."
+        }
+    }
+
+    private func presentPayLinkEmail(_ link: PayLink) {
+        let organizationName = app.activeOrganization()?.name ?? ""
+        let subject = PayLinkMessage.emailSubject(
+            organizationName: organizationName,
+            amount: draft.amount
+        )
+        let body = PayLinkMessage.emailBody(
+            organizationName: organizationName,
+            amount: draft.amount,
+            url: link.url
+        )
+        pendingPayLinkMail = MailComposer.Message(
+            recipients: [resolvedEmail],
+            subject: subject,
+            body: body,
+            attachmentData: nil,
+            attachmentFileName: ""
+        )
+        if MailComposer.canSendMail {
+            isPresentingMail = true
+        } else if let url = PayLinkMessage.mailtoURL(
+            email: resolvedEmail,
+            subject: subject,
+            body: body
+        ) {
+            UIApplication.shared.open(url)
+        } else {
+            paymentError = "Mail is not available on this device. Copy the link from the gift once it is saved."
+        }
+    }
+
+    private func refreshPayStatus() async {
+        let sessionID = draft.checkoutSessionID ?? ""
+        guard draft.method.isPayLink || !sessionID.isEmpty || draft.paymentLinkURL != nil else {
+            return
+        }
+        isCheckingPayStatus = true
+        paymentError = nil
+        defer { isCheckingPayStatus = false }
+
+        do {
+            let status = try await app.payments.refreshPayLinkStatus(
+                sessionID: sessionID,
+                giftID: draft.id
+            )
+            app.payments.apply(status, to: &draft)
+            if status.paid {
+                Haptics.success()
+            } else {
+                paymentError = "Stripe has not recorded this as succeeded yet."
+            }
+        } catch {
+            Haptics.warning()
+            paymentError = (error as? LocalizedError)?.errorDescription
+                ?? "Could not check payment status."
+        }
+    }
+
+    private func syncPhoneFromContact() {
+        guard draft.newContact.phone.trimmedOrNil == nil,
+              let phone = selectedContact?.phone.trimmedOrNil else { return }
+        draft.newContact.phone = phone
+        draft.touch()
+    }
+
+    private func syncEmailFromContact() {
+        guard draft.newContact.email.trimmedOrNil == nil,
+              let email = selectedContact?.email.trimmedOrNil else { return }
+        draft.newContact.email = email
+        draft.touch()
+    }
+
+    private func persistPhoneIfNeeded() {
+        guard let phone = draft.newContact.phone.trimmedOrNil,
+              let contact = selectedContact else { return }
+        contact.phone = phone
+        try? context.save()
+    }
+
+    private func persistEmailIfNeeded() {
+        guard let email = draft.newContact.email.trimmedOrNil,
+              let contact = selectedContact else { return }
+        contact.email = email
+        try? context.save()
     }
 
     // MARK: Advanced
@@ -587,6 +934,7 @@ struct GiftStepView: View {
 private struct MethodTile: View {
     let option: PaymentCoordinator.MethodOption
     let isSelected: Bool
+    var simulatedCaption: String? = nil
     let action: () -> Void
 
     var body: some View {
@@ -600,7 +948,11 @@ private struct MethodTile: View {
                         .font(Type.secondary.weight(.medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
-                    if let reason = option.unavailableReason {
+                    if let simulatedCaption {
+                        Text(simulatedCaption)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Palette.critical)
+                    } else if let reason = option.unavailableReason {
                         Text(reason.shortLabel)
                             .font(.caption2)
                             .foregroundStyle(Palette.textTertiary)

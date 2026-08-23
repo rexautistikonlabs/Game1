@@ -49,22 +49,52 @@ protocol TapToPayBackend: Sendable {
     /// one-off provisioning), fast afterwards.
     func prepareReader() async throws
     /// Presents the system tap UI and returns once the card is charged.
-    func collect(amountMinorUnits: Int, currencyCode: String, reference: String) async throws -> ProcessorChargeResult
+    func collect(
+        amountMinorUnits: Int,
+        currencyCode: String,
+        reference: String,
+        stripeAccount: String?,
+        organizationName: String
+    ) async throws -> ProcessorChargeResult
+    /// Cancels an in-flight collect, discovery, or confirm. Safe if idle.
+    func cancelCollect() async
 }
 
-/// No SDK linked. Reports honestly and never pretends.
+extension TapToPayBackend {
+    func cancelCollect() async {}
+}
+
+enum TapToPayBackendFactory {
+    @MainActor
+    static func make() -> TapToPayBackend {
+        #if canImport(StripeTerminal)
+        return StripeTerminalTapToPayBackend()
+        #else
+        return TapToPayUnavailableBackend()
+        #endif
+    }
+}
+
+/// No SDK linked, or entitlement missing. Reports honestly and never pretends.
 struct TapToPayUnavailableBackend: TapToPayBackend {
     struct NotIntegrated: LocalizedError {
         var errorDescription: String? {
-            "Tap to Pay is not integrated in this build. Use Apple Pay or record the payment manually."
+            TapToPayCollectUI.deviceOrEntitlementMessage
         }
     }
 
     func isReady() async -> Bool { false }
     func prepareReader() async throws { throw NotIntegrated() }
-    func collect(amountMinorUnits: Int, currencyCode: String, reference: String) async throws -> ProcessorChargeResult {
+    func collect(
+        amountMinorUnits: Int,
+        currencyCode: String,
+        reference: String,
+        stripeAccount: String?,
+        organizationName: String
+    ) async throws -> ProcessorChargeResult {
         throw NotIntegrated()
     }
+    func cancelCollect() async {}
 }
 
 @MainActor
@@ -73,38 +103,37 @@ final class TapToPayProvider: PaymentProvider {
     let method: GiftMethod = .tapToPay
 
     private let reachability: Reachability
-    private let backend: TapToPayBackend
-    /// Cached across calls: provisioning is expensive and only needs doing once
-    /// per phone, and repeating the check at every door would be rude to the
-    /// battery.
-    private var readerPrepared = false
-    private var cachedBackendReady: Bool?
+    private var backend: TapToPayBackend
+    /// When tests inject a backend, Collect must not replace it.
+    private let usesInjectedBackend: Bool
 
-    init(reachability: Reachability, backend: TapToPayBackend = TapToPayUnavailableBackend()) {
+    init(reachability: Reachability, backend: TapToPayBackend? = nil) {
         self.reachability = reachability
-        self.backend = backend
+        if let backend {
+            self.backend = backend
+            self.usesInjectedBackend = true
+        } else {
+            self.backend = TapToPayUnavailableBackend()
+            self.usesInjectedBackend = false
+        }
+    }
+
+    /// Stripe Terminal is constructed here, never at launch.
+    func ensureLiveBackendIfNeeded() {
+        guard !usesInjectedBackend else { return }
+        if backend is TapToPayUnavailableBackend {
+            backend = TapToPayBackendFactory.make()
+        }
     }
 
     // MARK: Availability
 
-    /// Whether this build carries the Tap to Pay entitlement.
-    ///
-    /// Driven by a compile-time flag rather than sniffed at runtime, on purpose.
-    /// iOS gives an app no reliable public way to read its own entitlements, and
-    /// the entitlement is a build-time fact anyway. Once Apple grants it:
-    ///
-    ///   1. uncomment the key in `FieldForge.entitlements`, and
-    ///   2. add `-D TAP_TO_PAY_ENABLED` to `OTHER_SWIFT_FLAGS` (or set
-    ///      `SWIFT_ACTIVE_COMPILATION_CONDITIONS = TAP_TO_PAY_ENABLED`).
-    ///
-    /// Until then the button is drawn disabled with an accurate explanation
-    /// rather than failing on tap.
+    /// Whether this build's signature carries Tap to Pay *and* Stripe Terminal
+    /// is linked. Never inferred from a compile flag alone: calling Terminal
+    /// or ProximityReader payment APIs without the Apple grant can crash, so
+    /// this is a runtime read of the signed entitlement.
     static var isEntitled: Bool {
-        #if TAP_TO_PAY_ENABLED
-        return true
-        #else
-        return false
-        #endif
+        TapToPayEntitlement.canAcceptContactlessOnThisBuild
     }
 
     /// Device support, independent of entitlement. Tap to Pay needs a Secure
@@ -122,33 +151,52 @@ final class TapToPayProvider: PaymentProvider {
         #endif
     }
 
+    /// Simulator or a build whose profile lacks Apple's grant. Collect must
+    /// refuse with `TapToPayCollectUI.deviceOrEntitlementMessage` and must
+    /// never call Stripe Terminal / ProximityReader payment APIs.
+    static var shouldRefuseCollectOnThisRuntime: Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return !canAcceptContactless
+        #endif
+    }
+
+    static var canAcceptContactless: Bool {
+        TapToPayEntitlement.canAcceptContactlessOnThisBuild
+    }
+
+    static var deviceOrEntitlementFailure: PaymentFailure {
+        PaymentFailure(
+            message: TapToPayCollectUI.deviceOrEntitlementMessage,
+            isRetryable: false,
+            diagnosticCode: TapToPayCollectUI.deviceOrEntitlementCode
+        )
+    }
+
     func availability() -> PaymentUnavailableReason? {
-        guard Self.isDeviceCapable else { return .tapToPayUnsupportedDevice }
-        guard Self.isEntitled else { return .tapToPayEntitlementMissing }
+        // The tile stays selectable. Collect is what starts Terminal — or
+        // shows the registered-iPhone alert on Simulator / a missing grant.
+        // Offline still disables: no card network authorises without a route.
         guard reachability.isOnline else { return .offline }
-        if cachedBackendReady == false { return .tapToPayNotProvisioned }
         return nil
     }
 
-    /// Warms up the reader so the first tap of the day is not the slow one.
-    /// Call from the Today screen when the staffer starts a route.
-    func prepareIfPossible() async {
-        guard availability() == nil, !readerPrepared else { return }
-        let ready = await backend.isReady()
-        cachedBackendReady = ready
-        guard ready else { return }
-        do {
-            try await backend.prepareReader()
-            readerPrepared = true
-            AppLog.payments.info("Tap to Pay reader prepared")
-        } catch {
-            AppLog.payments.error("Reader preparation failed: \(error.localizedDescription, privacy: .public)")
-        }
+    func cancelCollect() async {
+        await backend.cancelCollect()
     }
+
+    /// Collect initialises Terminal. Route / launch must not.
+    func prepareIfPossible() async {}
 
     // MARK: Collect
 
     func collect(_ request: PaymentRequest) async -> PaymentOutcome {
+        // Simulator and a missing Apple grant must not call Terminal APIs.
+        // Selecting the method is not a charge; this is.
+        if Self.shouldRefuseCollectOnThisRuntime {
+            return .failed(Self.deviceOrEntitlementFailure)
+        }
         if let reason = availability() { return .unavailable(reason) }
         guard request.amount.isPositive else {
             return .failed(PaymentFailure(
@@ -158,50 +206,80 @@ final class TapToPayProvider: PaymentProvider {
             ))
         }
 
-        let ready = await backend.isReady()
-        cachedBackendReady = ready
-        guard ready else { return .unavailable(.tapToPayNotProvisioned) }
-
-        if !readerPrepared {
-            do {
-                try await backend.prepareReader()
-                readerPrepared = true
-            } catch {
-                return .failed(PaymentFailure(
-                    message: error.localizedDescription,
-                    isRetryable: true,
-                    diagnosticCode: "reader-prepare"
-                ))
-            }
-        }
+        ensureLiveBackendIfNeeded()
+        await TapToPayKeyboard.resignBeforeCollect()
 
         do {
             let result = try await backend.collect(
                 amountMinorUnits: request.amount.minorUnits,
                 currencyCode: request.amount.currencyCode,
-                reference: request.fundName
+                reference: request.fundName,
+                stripeAccount: request.stripeAccount,
+                organizationName: request.merchantName
             )
             return .captured(PaymentReceipt(
                 amount: request.amount,
                 transactionIdentifier: result.processorTransactionID,
                 instrumentDescription: result.instrumentDescription ?? "Contactless card",
                 method: .tapToPay,
-                isSettled: result.isSettled
+                isSettled: result.isSettled,
+                paymentIntentStatus: result.paymentIntentStatus
             ))
         } catch let error as ProcessorError {
+            if error.localizedDescription == TapToPayCollectUI.missingLocationMessage {
+                return .failed(PaymentFailure(
+                    message: TapToPayCollectUI.missingLocationMessage,
+                    isRetryable: false,
+                    diagnosticCode: TapToPayCollectUI.missingLocationCode
+                ))
+            }
             return .failed(PaymentFailure(
                 message: error.localizedDescription,
                 isRetryable: error.isRetryable,
                 diagnosticCode: error.diagnosticName
             ))
+        } catch is CancellationError {
+            return .cancelled
+        } catch let error as TapToPayCollectError {
+            switch error {
+            case .deviceOrEntitlement:
+                return .failed(Self.deviceOrEntitlementFailure)
+            case .timedOut:
+                return .failed(PaymentFailure(
+                    message: error.localizedDescription,
+                    isRetryable: true,
+                    diagnosticCode: "tap-to-pay-timeout"
+                ))
+            case .missingLocation:
+                return .failed(PaymentFailure(
+                    message: TapToPayCollectUI.missingLocationMessage,
+                    isRetryable: false,
+                    diagnosticCode: TapToPayCollectUI.missingLocationCode
+                ))
+            }
         } catch {
             // A cancelled tap arrives as an error from most vendor SDKs. Treat
             // a cancellation as a cancellation, not a failure to apologise for.
-            if (error as NSError).code == NSUserCancelledError {
+            if TapToPayCollectUI.isCancellation(error) {
                 return .cancelled
             }
+            let message = error.localizedDescription
+            if message == TapToPayCollectUI.deviceOrEntitlementMessage {
+                return .failed(Self.deviceOrEntitlementFailure)
+            }
+            if message == TapToPayCollectUI.missingLocationMessage {
+                return .failed(PaymentFailure(
+                    message: TapToPayCollectUI.missingLocationMessage,
+                    isRetryable: false,
+                    diagnosticCode: TapToPayCollectUI.missingLocationCode
+                ))
+            }
+            // discoverReaders / Apple Tap to Pay errors: show Stripe or Apple's
+            // string and stay on What. Do not swallow into a generic tap line.
             return .failed(PaymentFailure(
-                message: error.localizedDescription,
+                message: message.isEmpty
+                    ? TapToPayCollectUI.contactlessFailureMessage
+                    : message,
                 isRetryable: true,
                 diagnosticCode: "tap-to-pay"
             ))

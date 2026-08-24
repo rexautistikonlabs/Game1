@@ -173,6 +173,27 @@ Sixty seconds with no card cancels the outstanding step and leaves the gift
 unpaid on What. Cancel returns to What immediately and never waits on Stripe's
 cancel completion.
 
+## The app cannot cancel Apple's card-read screen
+
+This is the limit, and it is worth stating plainly because three rounds of
+fixes went past it.
+
+Once `processPaymentIntent` starts the reader, **Apple's ProximityReader
+presents the card-read screen itself**. It is a system UI drawn above every
+app window, and an app is not permitted to layer over it — that restriction is
+the point of the entitlement, because an app that could draw over the card
+screen could impersonate it. FieldForge's hold-card overlay lives inside the
+app's own window, so from the moment Apple's screen appears the app's Cancel
+button is *behind* it and cannot be tapped. Nothing in the app can dismiss
+that screen either; the only lever is `Cancelable.cancel`, which asks Stripe to
+end the session — and a wedged session is exactly the case where that does not
+answer.
+
+So the app's Cancel is honest about its reach: it covers the connection token,
+discovery, connect and retrieve, and the overlay says outright that Apple's
+screen owns Cancel once it appears. Beyond that the staffer force-quits, and
+the switch below is why that is survivable rather than a lost gift.
+
 Cancel is the one path that must never depend on any of it. The button is a
 plain `Button`, never disabled, and `PaymentCoordinator.cancelTapToPay()` is
 **not `async`** — the compiler will not let an `await` into it. It clears the

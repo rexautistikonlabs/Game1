@@ -42,6 +42,7 @@ struct NewInteractionFlow: View {
     /// Bumped by each Collect and by Cancel, so an abandoned collect unwinding
     /// later cannot pull the overlay out from under the attempt after it.
     @State private var collectAttempt = 0
+    @State private var isConfirmingTapToPay = false
     @State private var showsTapToPayDeviceAlert = false
     @State private var collectFailureAlert: String?
 
@@ -86,8 +87,11 @@ struct NewInteractionFlow: View {
                         case .who:
                             WhoStepView(draft: $draft)
                         case .what:
+                            // Both Collect buttons go through the same
+                            // experimental warning; neither starts a reader
+                            // without it.
                             GiftStepView(draft: $draft, onCollectTapToPay: {
-                                Task { await collectTapToPayThenAdvance() }
+                                isConfirmingTapToPay = true
                             })
                         case .document:
                             DocumentStepView(draft: $draft, personalNote: $personalNote)
@@ -162,6 +166,20 @@ struct NewInteractionFlow: View {
                 Button("OK", role: .cancel) { collectFailureAlert = nil }
             } message: {
                 Text(collectFailureAlert ?? TapToPayCollectUI.contactlessFailureMessage)
+            }
+            .confirmationDialog(
+                "Tap to Pay is experimental",
+                isPresented: $isConfirmingTapToPay,
+                titleVisibility: .visible
+            ) {
+                Button("Start Tap to Pay") {
+                    Task { await collectTapToPayThenAdvance() }
+                }
+                Button("Send a pay link instead", role: .cancel) {
+                    isConfirmingTapToPay = false
+                }
+            } message: {
+                Text(TapToPayCollectUI.experimentalConfirmation)
             }
             .overlay {
                 if isCollectingTapToPay {
@@ -338,7 +356,11 @@ struct NewInteractionFlow: View {
 
     @ViewBuilder
     private var whatPrimaryAction: some View {
+        // With the switch off there is no Collect at all — not a disabled one.
+        // A draft restored from a previous session can still carry .tapToPay,
+        // so the method alone is not enough to offer the button.
         let tapUnpaid = draft.method == .tapToPay
+            && TapToPayProvider.isTurnedOnInSettings
             && draft.hasWhat
             && !draft.hasSucceededElectronicPayment
         let payLinkUnpaid = draft.method.isPayLink
@@ -352,11 +374,11 @@ struct NewInteractionFlow: View {
                     isLoading: isCollectingTapToPay,
                     isEnabled: draft.amount.isPositive && !isCollectingTapToPay
                 ) {
-                    Task { await collectTapToPayThenAdvance() }
+                    isConfirmingTapToPay = true
                 }
-                Text(TapToPayCollectUI.holdCardPrompt)
+                Text(TapToPayCollectUI.experimentalWarning)
                     .font(Type.caption)
-                    .foregroundStyle(Palette.textSecondary)
+                    .foregroundStyle(Palette.caution)
             } else if payLinkUnpaid {
                 PrimaryButton(
                     title: "Next",
@@ -396,6 +418,7 @@ struct NewInteractionFlow: View {
     private func collectTapToPayThenAdvance() async {
         guard !isCollectingTapToPay else { return }
         guard draft.method == .tapToPay, draft.hasWhat else { return }
+        guard TapToPayProvider.isTurnedOnInSettings else { return }
         guard let organization = app.activeOrganization() else {
             errorMessage = "Add your organization in Settings first."
             return
@@ -633,10 +656,19 @@ private struct TapToPayHoldCardOverlay: View {
                 ProgressView()
                     .progressViewStyle(.circular)
                     .tint(Palette.onAccent)
+                // This Cancel reaches the connection token, discovery and
+                // connect. It cannot reach Apple's card-read screen: that is
+                // a system UI drawn above every app window, on purpose, and
+                // nothing here is layered over it. Say so rather than offer a
+                // button the staffer cannot press.
                 Button("Cancel") { onCancel() }
                     .font(Type.secondary.weight(.semibold))
                     .foregroundStyle(Palette.onAccent)
                     .minimumTapTarget()
+                Text(TapToPayCollectUI.systemSheetOwnsCancel)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.onAccent.opacity(0.85))
+                    .multilineTextAlignment(.center)
             }
             .padding(Space.xl)
             .frame(maxWidth: 320)

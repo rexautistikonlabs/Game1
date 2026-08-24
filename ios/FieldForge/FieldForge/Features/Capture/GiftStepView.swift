@@ -485,8 +485,15 @@ struct GiftStepView: View {
                 )
             }
 
-            if draft.method == .tapToPay {
+            // No Collect at all while the switch is off, even for a draft
+            // restored with .tapToPay already chosen.
+            if draft.method == .tapToPay, TapToPayProvider.isTurnedOnInSettings {
                 tapToPayCollectSection
+            } else if draft.method == .tapToPay {
+                InlineBanner(
+                    kind: .caution,
+                    message: TapToPayCollectUI.turnedOffMessage
+                )
             }
 
             if draft.method == .pledge {

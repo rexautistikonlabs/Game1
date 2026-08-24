@@ -224,12 +224,12 @@ final class PaymentCoordinator {
     }
 
     /// Last line of defence. If anything has put the coordinator back into an
-    /// in-flight state fifteen seconds after a Cancel, clear it again — a
-    /// staffer must never meet a Collect button that has been dead since the
-    /// last donor.
+    /// in-flight state five seconds after a Cancel, clear it again — a staffer
+    /// must never meet a Collect button that has been dead since the last
+    /// donor.
     private func scheduleCancelFailsafe(generation: Int) {
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(15))
+            try? await Task.sleep(for: .seconds(5))
             guard let self, self.collectGeneration == generation else { return }
             guard self.inFlightMethod != nil || TapToPaySession.collectInFlight else { return }
             AppLog.payments.error("Cancel failsafe cleared a stuck Tap to Pay collect")

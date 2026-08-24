@@ -733,6 +733,12 @@ always verify Cancel before relying on Collect in the field.** A hung session
 under the debugger also blocks SpringBoard from relaunching the app — quit Xcode
 and it opens again.
 
+**The app cannot cancel Apple's card-read screen.** Once the reader starts,
+that screen is a system UI above every app window; FieldForge's own Cancel is
+behind it and nothing in the app can dismiss it. The app's Cancel covers
+everything up to that point, and Collect now warns before it starts. This is
+why the feature ships off. See [TAP_TO_PAY.md](TAP_TO_PAY.md).
+
 **Verify Cancel first, every time, before a donor is standing there.** Press
 Collect, wait for the hold-card overlay, press Cancel without presenting a card.
 You should be back on What in under a second with the gift unpaid and Collect

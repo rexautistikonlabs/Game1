@@ -46,6 +46,15 @@ enum TapToPayCollectUI {
     static let missingLocationMessage =
         "Create a Terminal location in Stripe Dashboard and set STRIPE_TERMINAL_LOCATION_ID on Azure."
     static let missingLocationCode = "tap-to-pay-location"
+    /// Apple's card-read screen is a system UI drawn above every app window —
+    /// an app is not permitted to layer over it, which is exactly why the app's
+    /// own Cancel stops being reachable the moment it appears.
+    static let systemSheetOwnsCancel =
+        "Once Apple's payment screen appears, use its Cancel — this one is behind it."
+    static let experimentalWarning =
+        "Experimental. If Cancel fails, force-quit and turn Tap to Pay off."
+    static let experimentalConfirmation =
+        "Apple's payment screen takes over once the reader starts, and its Cancel is the only one that reaches it. If nothing responds, force-quit FieldForge and switch Tap to Pay off in Settings → Payments. A text or email pay link always works and the donor pays on their own phone."
     /// Tap to Pay ships off. The donor pay link is the primary card path.
     static let turnedOffMessage =
         "Tap to Pay is off. Text or email a pay link so the donor pays on their own phone, or switch it on in Settings → Payments."

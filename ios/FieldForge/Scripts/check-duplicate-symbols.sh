@@ -100,7 +100,28 @@ else
   printf '  \033[33mnote\033[0m  Terminal backend not found; skipping\n'
 fi
 
-note "4. Secrets must never reach iOS"
+note "4. Tap to Pay cannot start without the switch and the warning"
+FLOW="FieldForge/Features/Capture/NewInteractionFlow.swift"
+if [ -f "$FLOW" ]; then
+  # collectTapToPayThenAdvance must only ever be reached from the confirmation
+  # dialog. Apple's card-read screen cannot be cancelled from inside the app,
+  # so the staffer has to have been told before a reader ever starts.
+  STARTS="$(grep -c 'Task { await collectTapToPayThenAdvance() }' "$FLOW")"
+  if [ "$STARTS" -eq 1 ]; then
+    pass "exactly one path starts a reader (the warning dialog)"
+  else
+    fail "$STARTS paths start a reader — every one must go through the warning"
+    grep -n 'collectTapToPayThenAdvance()' "$FLOW" | sed 's/^/          /'
+  fi
+  if grep -q 'TapToPayProvider.isTurnedOnInSettings' "$FLOW" \
+     && grep -q 'TapToPayProvider.isTurnedOnInSettings' FieldForge/Features/Capture/GiftStepView.swift; then
+    pass "both Collect buttons are gated on the settings switch"
+  else
+    fail "a Collect button is not gated on the settings switch"
+  fi
+fi
+
+note "5. Secrets must never reach iOS"
 SECRETS="$(grep -rn --include=*.swift --include=*.plist --include=*.entitlements --include=*.yml \
              -e 'sk_test_[A-Za-z0-9]\{8,\}' -e 'sk_live_' -e 'tml_[A-Za-z0-9]\{8,\}' . 2>/dev/null \
            | grep -v 'FieldForgeTests/')"
@@ -111,14 +132,14 @@ else
   printf '%s\n' "$SECRETS" | sed 's/^/          /'
 fi
 
-note "5. Staff Wallet stays out of capture"
+note "6. Staff Wallet stays out of capture"
 if grep -q 'presentsStaffApplePayInCapture = false' FieldForge/Payments/PaymentCoordinator.swift 2>/dev/null; then
   pass "presentsStaffApplePayInCapture is false"
 else
   fail "staff Apple Pay may be presented in capture"
 fi
 
-note "6. Tap to Pay still ships off"
+note "7. Tap to Pay still ships off"
 if grep -q 'isTapToPayEnabled = defaults.bool(forKey: Keys.tapToPayEnabled)' \
      FieldForge/Payments/StripePaymentSettings.swift 2>/dev/null; then
   pass "absent key means off"

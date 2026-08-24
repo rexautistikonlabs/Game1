@@ -533,6 +533,28 @@ struct TextPayLinkTests {
         #expect(PaymentUnavailableReason.tapToPayEntitlementMissing.shortLabel == "Not enabled")
     }
 
+    @Test("Cancel returns at once even when the backend's cancel never does")
+    @MainActor
+    func cancelDoesNotAwaitStripe() {
+        // `cancelTapToPay()` is not `async`. That signature is the proof the
+        // requirement asks for: the compiler will not allow an `await` inside
+        // it, so nothing Stripe does can sit between the tap and the overlay
+        // coming down. This measures the same guarantee from outside, against
+        // a backend whose cancel never returns.
+        let coordinator = PaymentCoordinator(
+            reachability: Reachability(startImmediately: false),
+            tapToPayBackend: HungTapToPayBackend()
+        )
+        TapToPaySession.markStarted()
+
+        let clock = ContinuousClock()
+        let elapsed = clock.measure { coordinator.cancelTapToPay() }
+
+        #expect(elapsed < .milliseconds(50))
+        #expect(coordinator.inFlightMethod == nil)
+        #expect(!TapToPaySession.collectInFlight)
+    }
+
     @Test("Cancel frees the coordinator at once, without waiting on Stripe")
     @MainActor
     func cancelClearsInFlightImmediately() async {
@@ -771,5 +793,34 @@ struct TextPayLinkTests {
         #expect(draft.paymentIntentStatus == "succeeded")
         #expect(draft.confirmedTransactionIdentifier == "pi_test_1")
         #expect(draft.amount.minorUnits == 2500)
+    }
+}
+
+/// A Tap to Pay backend that behaves the way the device did: it accepts a
+/// collect and never answers, and it accepts a cancel and never answers that
+/// either. Any `await` on this from the Cancel path deadlocks the test.
+private struct HungTapToPayBackend: TapToPayBackend {
+
+    func isReady() async -> Bool { true }
+
+    func prepareReader() async throws {}
+
+    func collect(
+        amountMinorUnits: Int,
+        currencyCode: String,
+        reference: String,
+        stripeAccount: String?,
+        organizationName: String
+    ) async throws -> ProcessorChargeResult {
+        // Cancellable, so cancelling the coordinator's task unwinds it — which
+        // is how the real backend's continuations behave now.
+        try await Task.sleep(for: .seconds(3600))
+        throw ProcessorError.malformedResponse
+    }
+
+    // Never returns on its own. Cancel must not be waiting on this.
+
+    func cancelCollect() async {
+        try? await Task.sleep(for: .seconds(3600))
     }
 }

@@ -173,6 +173,22 @@ Sixty seconds with no card cancels the outstanding step and leaves the gift
 unpaid on What. Cancel returns to What immediately and never waits on Stripe's
 cancel completion.
 
+Cancel is the one path that must never depend on any of it. The button is a
+plain `Button`, never disabled, and `PaymentCoordinator.cancelTapToPay()` is
+**not `async`** — the compiler will not let an `await` into it. It clears the
+in-flight lock, the launch lock and the overlay on the spot, cancels the collect
+task, and only then hands Stripe a cancel on a background queue that nobody
+waits for. If Cancel ever fails on a device again, switch Tap to Pay off in
+Settings → Payments and keep taking cards by pay link.
+
+**No Stripe Terminal call runs on the main thread.** They all go through
+`TerminalQueue`, a serial background queue. This is not tidiness: tearing down a
+live reader session blocks the calling thread, and `Cancelable.cancel` on the
+main actor — on the very tap meant to escape — blocked the run loop, so the
+overlay never re-rendered and force-quitting was the only way out.
+`Scripts/check-duplicate-symbols.sh` fails the build check if a
+`Cancelable.cancel` ever escapes that queue again.
+
 One guard sits outside that line: **every Terminal entry point runs through an
 Objective-C exception shim** (`catchingTerminalException`). Stripe Terminal
 reports integration mistakes — a missing Info.plist key, a call it considers

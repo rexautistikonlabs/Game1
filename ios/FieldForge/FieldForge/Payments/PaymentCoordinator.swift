@@ -205,13 +205,39 @@ final class PaymentCoordinator {
     ///
     /// Telling Stripe is best-effort and deliberately not awaited.
     func cancelTapToPay() {
+        // Everything below is plain state assignment and a task cancel. There
+        // is deliberately no `await` before the UI is free: a Stripe call that
+        // blocks must never be able to sit between the tap and the dismissal.
         collectGeneration &+= 1
+        let generation = collectGeneration
         let task = collectTask
         collectTask = nil
         inFlightMethod = nil
         TapToPaySession.markFinished()
         task?.cancel()
-        Task { await tapToPay.cancelCollect() }
+
+        // Off the main actor entirely, and nobody waits on the result.
+        let provider = tapToPay
+        Task.detached { await provider.cancelCollect() }
+
+        scheduleCancelFailsafe(generation: generation)
+    }
+
+    /// Last line of defence. If anything has put the coordinator back into an
+    /// in-flight state fifteen seconds after a Cancel, clear it again — a
+    /// staffer must never meet a Collect button that has been dead since the
+    /// last donor.
+    private func scheduleCancelFailsafe(generation: Int) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(15))
+            guard let self, self.collectGeneration == generation else { return }
+            guard self.inFlightMethod != nil || TapToPaySession.collectInFlight else { return }
+            AppLog.payments.error("Cancel failsafe cleared a stuck Tap to Pay collect")
+            self.collectTask?.cancel()
+            self.collectTask = nil
+            self.inFlightMethod = nil
+            TapToPaySession.markFinished()
+        }
     }
 
     /// True when a captured outcome is safe to treat as received.

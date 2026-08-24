@@ -120,7 +120,6 @@ final class StripeTerminalTapToPayBackend: TapToPayBackend, @unchecked Sendable 
 /// SIGABRT. Route every SDK entry point through the ObjC shim so an assertion
 /// becomes an alert on What carrying Stripe's own reason, and a fault in the
 /// log naming the call that raised.
-@MainActor
 private func catchingTerminalException<T>(
     _ label: StaticString,
     _ work: () -> T
@@ -138,9 +137,54 @@ private func catchingTerminalException<T>(
     return value
 }
 
+// MARK: - The Terminal queue
+
+/// The one thread every Stripe Terminal call runs on, and it is never the
+/// main one.
+///
+/// This is the whole reason Cancel works. Tearing down a live reader session
+/// means a handshake with Apple's proximity-reader daemon, and an SDK call
+/// that blocks while that happens blocks whatever thread it was made on.
+/// Called from the main actor — as `Cancelable.cancel` used to be, on the very
+/// tap meant to escape — it blocks the run loop, so the overlay never
+/// re-renders and the staffer's only way out is force-quitting mid-visit.
+///
+/// So the main actor keeps the state and answers the taps, and this queue does
+/// all the talking to Stripe. Serial, because the SDK is not thread-safe and
+/// one collect is one conversation.
+enum TerminalQueue {
+
+    static let queue = DispatchQueue(
+        label: "org.rexautistikonlabs.fieldforge.stripe-terminal",
+        qos: .userInitiated
+    )
+
+    /// For calls nobody waits on — cancels, above all. Returns instantly.
+    static func detach(_ work: @escaping @Sendable () -> Void) {
+        queue.async(execute: work)
+    }
+
+    /// Suspends the caller until the SDK returns. Suspends, never blocks: the
+    /// main actor is free to run a Cancel while this is outstanding.
+    static func run<T>(
+        _ label: StaticString,
+        _ work: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    continuation.resume(returning: try catchingTerminalException(label, work))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Session
 
-/// All Stripe Terminal work, on the main actor. Terminal delivers delegate
+/// Terminal state on the main actor, Terminal *calls* on `TerminalQueue`. Terminal delivers delegate
 /// callbacks and completion blocks on the main thread, so main-actor isolation
 /// removes every lock this file used to need: only one step of one collect is
 /// ever outstanding, and only one place resumes it.
@@ -198,30 +242,29 @@ final class TapToPayTerminalSession {
 
         try Task.checkCancellation()
 
-        let retrieved: PaymentIntent = try await awaitingStripe { finish in
-            try catchingTerminalException("retrievePaymentIntent") {
-                Terminal.shared.retrievePaymentIntent(clientSecret: clientSecret) { intent, error in
-                    finish(intent, error)
-                }
+        let retrieved: PaymentIntent = try await awaitingStripe("retrievePaymentIntent") { finish in
+            Terminal.shared.retrievePaymentIntent(clientSecret: clientSecret) { intent, error in
+                finish(intent, error)
             }
             return nil
         }
 
         // "Hold card to top of iPhone". The reader is already connected, so
         // nothing on this path can start discovery.
-        let confirmed: PaymentIntent = try await awaitingStripe { finish in
-            try catchingTerminalException("processPaymentIntent") {
-                Terminal.shared.processPaymentIntent(
-                    retrieved,
-                    collectConfig: nil,
-                    confirmConfig: nil
-                ) { intent, error in
-                    finish(intent, error)
-                }
+        let confirmed: PaymentIntent = try await awaitingStripe("processPaymentIntent") { finish in
+            Terminal.shared.processPaymentIntent(
+                retrieved,
+                collectConfig: nil,
+                confirmConfig: nil
+            ) { intent, error in
+                finish(intent, error)
             }
         }
 
-        let status = Terminal.stringFromPaymentIntentStatus(confirmed.status)
+        let intentStatus = confirmed.status
+        let status = try await TerminalQueue.run("stringFromPaymentIntentStatus") {
+            Terminal.stringFromPaymentIntentStatus(intentStatus)
+        }
         guard status == "succeeded" else {
             throw ProcessorError.declined(
                 status.isEmpty
@@ -255,13 +298,14 @@ final class TapToPayTerminalSession {
         locationId = token.locationId
         try Task.checkCancellation()
 
-        try installTokenProviderIfNeeded()
+        try await installTokenProviderIfNeeded()
 
-        if Terminal.shared.connectionStatus == .connected { return }
+        if await isConnected() { return }
+        try Task.checkCancellation()
         // A reader we kept but are no longer connected to is stale.
         reader = nil
 
-        let supported = try catchingTerminalException("supportsReaders") {
+        let supported = try await TerminalQueue.run("supportsReaders") {
             Terminal.shared.supportsReaders(
                 of: .tapToPay,
                 discoveryMethod: .tapToPay,
@@ -286,23 +330,32 @@ final class TapToPayTerminalSession {
             throw error
         }
 
-        guard Terminal.shared.connectionStatus == .connected else {
+        guard await isConnected() else {
             reader = nil
             throw ProcessorError.server(status: 503, message: "Tap to Pay is not connected.")
         }
     }
 
-    private func installTokenProviderIfNeeded() throws {
+    private func installTokenProviderIfNeeded() async throws {
         guard !Self.didInstallTokenProvider else { return }
-        try catchingTerminalException("initialize") {
+        let provider = Self.tokenProvider
+        let delegate = Self.terminalDelegate
+        try await TerminalQueue.run("initialize") {
             if !Terminal.isInitialized() {
-                Terminal.initWithTokenProvider(Self.tokenProvider)
+                Terminal.initWithTokenProvider(provider)
             }
             // Connection status and payment status, for the log. Set once, and
             // before anything asks Terminal to do work.
-            Terminal.shared.delegate = Self.terminalDelegate
+            Terminal.shared.delegate = delegate
         }
         Self.didInstallTokenProvider = true
+    }
+
+    /// Reading connection status is a call into the SDK like any other.
+    private func isConnected() async -> Bool {
+        (try? await TerminalQueue.run("connectionStatus") {
+            Terminal.shared.connectionStatus == .connected
+        }) ?? false
     }
 
     // MARK: Cancel
@@ -312,18 +365,25 @@ final class TapToPayTerminalSession {
     func cancelOutstanding() {
         let cancelable = outstandingCancelable
         outstandingCancelable = nil
-        cancelable?.cancel { _ in }
         let abort = abortOutstanding
         abortOutstanding = nil
+        // Unblock the awaiting step first: that is what returns the staffer to
+        // What. Telling Stripe comes second, off the main thread, unwaited —
+        // `Cancelable.cancel` tearing down a live reader session is exactly the
+        // call that used to freeze the run loop on the Cancel tap.
         abort?()
+        if let cancelable {
+            TerminalQueue.detach { cancelable.cancel { _ in } }
+        }
     }
 
-    /// Bridges one Stripe completion block to `async`. `start` runs on the main
-    /// actor, hands back the step's `Cancelable` if it has one, and reports
-    /// through `finish` exactly once — later callbacks are dropped rather than
-    /// resuming a continuation twice.
+    /// Bridges one Stripe completion block to `async`. `start` runs on
+    /// `TerminalQueue`, hands back the step's `Cancelable` if it has one, and
+    /// reports through `finish` exactly once — later callbacks are dropped
+    /// rather than resuming a continuation twice.
     private func awaitingStripe<T>(
-        _ start: @escaping @MainActor (@escaping (T?, Error?) -> Void) throws -> Cancelable?
+        _ label: StaticString,
+        _ start: @escaping @Sendable (@escaping (T?, Error?) -> Void) -> Cancelable?
     ) async throws -> T {
         let once = StripeOnce<T>()
         abortOutstanding = { [weak once] in once?.deliver(nil, CancellationError()) }
@@ -332,12 +392,28 @@ final class TapToPayTerminalSession {
             outstandingCancelable = nil
         }
         return try await once.run { finish in
-            do {
-                self.outstandingCancelable = try start(finish)
-            } catch {
-                // The Terminal call raised before it could take the completion
-                // block; fail this step instead of the process.
-                once.deliver(nil, error)
+            // Hand the SDK call to the Terminal queue and return at once. The
+            // main actor must never be *inside* a Terminal call while the
+            // staffer might be reaching for Cancel.
+            TerminalQueue.detach { [weak self] in
+                var started: Cancelable?
+                var raised: Error?
+                do {
+                    started = try catchingTerminalException(label) { start(finish) }
+                } catch {
+                    raised = error
+                }
+                let cancelable = started
+                let failure = raised
+                Task { @MainActor in
+                    if let failure {
+                        once.deliver(nil, failure)
+                    } else {
+                        // Late is fine: `abortOutstanding` was armed before the
+                        // call was made, so a Cancel in this window is covered.
+                        self?.outstandingCancelable = cancelable
+                    }
+                }
             }
         }
     }
@@ -388,30 +464,48 @@ private final class TapToPayConnectAttempt: NSObject, DiscoveryDelegate {
                 continuation.resume(throwing: CancellationError())
                 return
             }
-            do {
-                self.discoverCancelable = try catchingTerminalException("discoverReaders") {
-                    Terminal.shared.discoverReaders(
-                        config,
-                        delegate: self
-                    ) { error in
-                        // Discovery has stopped. A successful connect stops it
-                        // with no error, and that case has already finished
-                        // this attempt.
-                        Task { @MainActor [weak self] in
-                            guard let self, !self.isFinished else { return }
-                            if let error {
-                                self.finish(.failure(error))
-                            } else if !self.didStartConnect {
-                                self.finish(.failure(ProcessorError.server(
-                                    status: 503,
-                                    message: "This iPhone could not start Tap to Pay."
-                                )))
+            TerminalQueue.detach { [weak self] in
+                guard let self else { return }
+                var started: Cancelable?
+                var raised: Error?
+                do {
+                    started = try catchingTerminalException("discoverReaders") {
+                        Terminal.shared.discoverReaders(
+                            config,
+                            delegate: self
+                        ) { error in
+                            // Discovery has stopped. A successful connect stops
+                            // it with no error, and that case has already
+                            // finished this attempt.
+                            Task { @MainActor [weak self] in
+                                guard let self, !self.isFinished else { return }
+                                if let error {
+                                    self.finish(.failure(error))
+                                } else if !self.didStartConnect {
+                                    self.finish(.failure(ProcessorError.server(
+                                        status: 503,
+                                        message: "This iPhone could not start Tap to Pay."
+                                    )))
+                                }
                             }
                         }
                     }
+                } catch {
+                    raised = error
                 }
-            } catch {
-                self.finish(.failure(error))
+                let cancelable = started
+                let failure = raised
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let failure {
+                        self.finish(.failure(failure))
+                    } else if self.isFinished {
+                        // Cancelled while the call was in flight on the queue.
+                        TerminalQueue.detach { cancelable?.cancel { _ in } }
+                    } else {
+                        self.discoverCancelable = cancelable
+                    }
+                }
             }
         }
     }
@@ -442,24 +536,27 @@ private final class TapToPayConnectAttempt: NSObject, DiscoveryDelegate {
             return
         }
 
-        do {
-            try catchingTerminalException("connectReader") {
-                Terminal.shared.connectReader(reader, connectionConfig: config) { connected, error in
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        if let connected {
-                            self.finish(.success(connected))
-                        } else {
-                            self.finish(.failure(error ?? ProcessorError.server(
-                                status: 503,
-                                message: TapToPayCollectUI.contactlessFailureMessage
-                            )))
+        TerminalQueue.detach { [weak self] in
+            guard let self else { return }
+            do {
+                try catchingTerminalException("connectReader") {
+                    Terminal.shared.connectReader(reader, connectionConfig: config) { connected, error in
+                        Task { @MainActor [weak self] in
+                            guard let self else { return }
+                            if let connected {
+                                self.finish(.success(connected))
+                            } else {
+                                self.finish(.failure(error ?? ProcessorError.server(
+                                    status: 503,
+                                    message: TapToPayCollectUI.contactlessFailureMessage
+                                )))
+                            }
                         }
                     }
                 }
+            } catch {
+                Task { @MainActor [weak self] in self?.finish(.failure(error)) }
             }
-        } catch {
-            finish(.failure(error))
         }
     }
 
@@ -467,12 +564,16 @@ private final class TapToPayConnectAttempt: NSObject, DiscoveryDelegate {
     /// already produced a reader is left alone — cancelling it is what used to
     /// abort the session under the hold-card sheet.
     func cancel() {
+        var pending: Cancelable?
         if !didStartConnect {
-            let cancelable = discoverCancelable
+            pending = discoverCancelable
             discoverCancelable = nil
-            cancelable?.cancel { _ in }
         }
+        // Unblock the awaiting collect first; tell Stripe off the main thread.
         finish(.failure(CancellationError()))
+        if let pending {
+            TerminalQueue.detach { pending.cancel { _ in } }
+        }
     }
 
     private func finish(_ result: Result<Reader, Error>) {

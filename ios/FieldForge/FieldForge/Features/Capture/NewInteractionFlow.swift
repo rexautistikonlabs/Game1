@@ -39,6 +39,9 @@ struct NewInteractionFlow: View {
     @State private var committed: DraftCommitter.Result?
     @State private var personalNote = ""
     @State private var isCollectingTapToPay = false
+    /// Bumped by each Collect and by Cancel, so an abandoned collect unwinding
+    /// later cannot pull the overlay out from under the attempt after it.
+    @State private var collectAttempt = 0
     @State private var showsTapToPayDeviceAlert = false
     @State private var collectFailureAlert: String?
 
@@ -410,8 +413,10 @@ struct NewInteractionFlow: View {
         // sheet. Settle it first, then show anything.
         await TapToPayKeyboard.resignBeforeCollect()
 
+        collectAttempt &+= 1
+        let attempt = collectAttempt
         isCollectingTapToPay = true
-        defer { isCollectingTapToPay = false }
+        defer { if attempt == collectAttempt { isCollectingTapToPay = false } }
 
         let outcome = await app.payments.collect(
             method: .tapToPay,
@@ -456,6 +461,7 @@ struct NewInteractionFlow: View {
     /// all before this returns. Nothing waits on Stripe, so no SDK that
     /// declines to call a completion block can strand the staffer.
     private func cancelTapToPayCollect() {
+        collectAttempt &+= 1
         isCollectingTapToPay = false
         app.payments.cancelTapToPay()
         Haptics.step()

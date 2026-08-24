@@ -78,7 +78,29 @@ else
   printf '  \033[33mnote\033[0m  not a git checkout; skipping\n'
 fi
 
-note "3. Secrets must never reach iOS"
+note "3. No Stripe Terminal call may run on the main thread"
+# A Cancelable.cancel on the main actor is what froze the UI on the Cancel tap:
+# tearing down a live reader session blocks, and a blocked main thread cannot
+# re-render the overlay away. Every such call must sit inside TerminalQueue.
+TERMINAL_FILE="FieldForge/Payments/StripeTerminalTapToPayBackend.swift"
+if [ -f "$TERMINAL_FILE" ]; then
+  STRAY="$(grep -n '\.cancel { _ in }' "$TERMINAL_FILE" | grep -v 'TerminalQueue.detach')"
+  if [ -z "$STRAY" ]; then
+    pass "every Cancelable.cancel is dispatched to TerminalQueue"
+  else
+    fail "Cancelable.cancel outside TerminalQueue — this is the freeze"
+    printf '%s\n' "$STRAY" | sed 's/^/          /'
+  fi
+  if grep -q 'func cancelTapToPay()' FieldForge/Payments/PaymentCoordinator.swift 2>/dev/null; then
+    pass "cancelTapToPay is synchronous (cannot await Stripe)"
+  else
+    fail "cancelTapToPay is no longer synchronous — Cancel may await Stripe"
+  fi
+else
+  printf '  \033[33mnote\033[0m  Terminal backend not found; skipping\n'
+fi
+
+note "4. Secrets must never reach iOS"
 SECRETS="$(grep -rn --include=*.swift --include=*.plist --include=*.entitlements --include=*.yml \
              -e 'sk_test_[A-Za-z0-9]\{8,\}' -e 'sk_live_' -e 'tml_[A-Za-z0-9]\{8,\}' . 2>/dev/null \
            | grep -v 'FieldForgeTests/')"
@@ -89,14 +111,14 @@ else
   printf '%s\n' "$SECRETS" | sed 's/^/          /'
 fi
 
-note "4. Staff Wallet stays out of capture"
+note "5. Staff Wallet stays out of capture"
 if grep -q 'presentsStaffApplePayInCapture = false' FieldForge/Payments/PaymentCoordinator.swift 2>/dev/null; then
   pass "presentsStaffApplePayInCapture is false"
 else
   fail "staff Apple Pay may be presented in capture"
 fi
 
-note "5. Tap to Pay still ships off"
+note "6. Tap to Pay still ships off"
 if grep -q 'isTapToPayEnabled = defaults.bool(forKey: Keys.tapToPayEnabled)' \
      FieldForge/Payments/StripePaymentSettings.swift 2>/dev/null; then
   pass "absent key means off"

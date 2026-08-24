@@ -733,6 +733,14 @@ always verify Cancel before relying on Collect in the field.** A hung session
 under the debugger also blocks SpringBoard from relaunching the app — quit Xcode
 and it opens again.
 
+**Verify Cancel first, every time, before a donor is standing there.** Press
+Collect, wait for the hold-card overlay, press Cancel without presenting a card.
+You should be back on What in under a second with the gift unpaid and Collect
+tappable again. **If Cancel ever fails to do that — freezes, or leaves Collect
+dead — turn Tap to Pay off in Settings → Payments and leave it off.** A donor
+paid by text or email pay link is a donor paid; a staffer force-quitting the app
+mid-visit has lost the gift and the moment. The switch exists for exactly this.
+
 #### The switch, and why it is off
 
 `Settings → Payments → Tap to Pay on iPhone` ships **off** and persists per

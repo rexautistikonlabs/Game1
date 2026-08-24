@@ -29,6 +29,7 @@ struct SettingsView: View {
                 organizationSection
                 staffSection
                 teamSection
+                paymentsSection
                 dataSection
                 subscriptionSection
                 storageSection
@@ -208,6 +209,46 @@ struct SettingsView: View {
         } footer: {
             Text("Exports are built on this iPhone and never uploaded.")
         }
+    }
+
+    // MARK: Payments
+
+    /// Tap to Pay ships off. Everything else about taking a card — the donor
+    /// pay link by text or email — works without touching this.
+    private var paymentsSection: some View {
+        Section {
+            Toggle(isOn: tapToPayBinding) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Tap to Pay on iPhone")
+                        .font(Type.body)
+                    Text(tapToPayStatusLine)
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+            }
+            .tint(Palette.brand)
+            .accessibilityHint("Off by default. Turn on only after testing a contactless card on this iPhone.")
+        } header: {
+            Text("Payments")
+        } footer: {
+            Text("Text and email pay links always work and are the recommended way to take a card — the donor pays on their own phone. Tap to Pay reads a physical contactless card on this iPhone. It needs Apple's Tap to Pay entitlement on this build, iPhone XS or later, and a connection, so it stays off until you have tested it in the field.")
+        }
+    }
+
+    private var tapToPayBinding: Binding<Bool> {
+        Binding(
+            get: { StripePaymentSettings.shared.isTapToPayEnabled },
+            set: { StripePaymentSettings.shared.isTapToPayEnabled = $0 }
+        )
+    }
+
+    private var tapToPayStatusLine: String {
+        guard StripePaymentSettings.shared.isTapToPayEnabled else {
+            return "Off — pay links only"
+        }
+        return TapToPayProvider.isEntitled
+            ? "On for this iPhone"
+            : "On, but this build has no Tap to Pay entitlement"
     }
 
     // MARK: Subscription

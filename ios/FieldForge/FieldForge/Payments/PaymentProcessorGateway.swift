@@ -44,6 +44,11 @@ struct ProcessorChargeResult {
     var isSettled: Bool
     /// Present when the processor knows more than PassKit does.
     var instrumentDescription: String?
+    /// Stripe's PaymentIntent status when the gateway saw one. A tax letter is
+    /// only allowed once this reads `succeeded`, so a gateway that cannot know
+    /// (the simulated one, a bare charge endpoint) leaves it empty rather than
+    /// guessing.
+    var paymentIntentStatus: String = ""
 }
 
 enum ProcessorError: LocalizedError {

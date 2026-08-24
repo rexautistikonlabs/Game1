@@ -46,6 +46,10 @@ enum TapToPayCollectUI {
     static let missingLocationMessage =
         "Create a Terminal location in Stripe Dashboard and set STRIPE_TERMINAL_LOCATION_ID on Azure."
     static let missingLocationCode = "tap-to-pay-location"
+    /// Tap to Pay ships off. The donor pay link is the primary card path.
+    static let turnedOffMessage =
+        "Tap to Pay is off. Text or email a pay link so the donor pays on their own phone, or switch it on in Settings → Payments."
+    static let turnedOffCode = "tap-to-pay-off"
 
     /// Stripe, PassKit, and `CancellationError` all arrive as cancellations.
     static func isCancellation(_ error: Error) -> Bool {
@@ -82,20 +86,6 @@ enum TapToPayKeyboard {
     static func resignBeforeCollect() async {
         resignNow()
         try? await Task.sleep(for: .milliseconds(resignSettlingMilliseconds))
-    }
-}
-
-/// First claim wins. Stripe may call the discover completion with nil after a
-/// reader; a second claim is ignored.
-final class TapToPayCallbackGate: @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock(initialState: false)
-
-    func claim() -> Bool {
-        lock.withLock { taken in
-            if taken { return false }
-            taken = true
-            return true
-        }
     }
 }
 
@@ -213,6 +203,8 @@ enum PaymentUnavailableReason: Equatable {
     case tapToPayUnsupportedDevice
     case tapToPayEntitlementMissing
     case tapToPayNotProvisioned
+    /// Settings → Payments has Tap to Pay switched off. Default state.
+    case tapToPayTurnedOff
 
     var explanation: String {
         switch self {
@@ -228,6 +220,8 @@ enum PaymentUnavailableReason: Equatable {
             return TapToPayCollectUI.deviceOrEntitlementMessage
         case .tapToPayNotProvisioned:
             return "This iPhone has not finished Tap to Pay setup. Connect to Wi-Fi and try again."
+        case .tapToPayTurnedOff:
+            return TapToPayCollectUI.turnedOffMessage
         }
     }
 
@@ -240,6 +234,7 @@ enum PaymentUnavailableReason: Equatable {
         case .tapToPayUnsupportedDevice: return "Not supported"
         case .tapToPayEntitlementMissing: return "Not enabled"
         case .tapToPayNotProvisioned: return "Needs setup"
+        case .tapToPayTurnedOff: return "Off"
         }
     }
 }

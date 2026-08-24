@@ -2,9 +2,25 @@
 //  StripeTerminalTapToPayBackend.swift
 //  FieldForge
 //
-//  Stripe Terminal Tap to Pay. Collect is the only entry. discoverReaders
-//  runs at most once per collect; the Reader is kept. Discovery is never
-//  started after the hold-card UI is up.
+//  Stripe Terminal Tap to Pay, in the shape of Stripe's own sample.
+//
+//  The whole Terminal conversation lives on the main actor, because that is
+//  where the SDK calls back, and it runs as one straight line:
+//
+//      connection token (Azure)  ->  token provider  ->  Terminal.shared.delegate
+//      ->  discoverReaders (once)  ->  connectReader  ->  retrievePaymentIntent
+//      ->  processPaymentIntent
+//
+//  Two rules earn their keep here:
+//
+//  1. `discoverReaders` runs at most once per connect, and the reader is kept.
+//     Discovery is ended by a successful `connectReader`, which is why connect
+//     is started from inside `didUpdateDiscoveredReaders` rather than after
+//     returning from discovery. Nothing cancels a discovery that already
+//     produced a reader.
+//  2. The connection token provider is owned for the life of the process.
+//     Stripe re-asks for a token during connect and during confirm; handing it
+//     an object nobody retains is a use-after-free in the middle of a tap.
 //
 
 import Foundation
@@ -13,20 +29,16 @@ import os
 #if canImport(StripeTerminal)
 import StripeTerminal
 
-/// Network and waits run off the main thread. Terminal calls that present UI
-/// hop to MainActor. Not MainActor itself — collect on main with the keyboard
-/// up is what aborted discoverReaders.
-final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked Sendable {
+/// Non-isolated shell so the async `TapToPayBackend` requirements are witnessed
+/// plainly. Every Terminal call is forwarded to `TapToPayTerminalSession`,
+/// which is main-actor bound.
+final class StripeTerminalTapToPayBackend: TapToPayBackend, @unchecked Sendable {
 
-    private let state = CollectState()
-    private let readerDelegate = FieldForgeTapToPayReaderDelegate()
-    private var discoveryDelegate: DiscoveryRelay?
+    private let session: TapToPayTerminalSession
 
-    override init() {
-        super.init()
-        readerDelegate.onDisconnect = { [weak self] in
-            self?.state.clearReader()
-        }
+    @MainActor
+    init() {
+        self.session = TapToPayTerminalSession()
     }
 
     func isReady() async -> Bool {
@@ -37,13 +49,13 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
         }
     }
 
-    func prepareReader() async throws {
-        // Collect connects. Do not warm from launch or route.
-    }
+    /// Collect connects. Nothing warms Terminal from launch or from Route.
+    func prepareReader() async throws {}
 
+    /// Returns immediately. Never waits on Stripe's cancel completion — the
+    /// What step has to come back under the staffer's thumb at once.
     func cancelCollect() async {
-        // Return immediately. Do not wait on Stripe's cancel completion.
-        state.cancelAll()
+        await session.cancelOutstanding()
     }
 
     func collect(
@@ -62,7 +74,7 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
 
         do {
             return try await withTimeout(seconds: TapToPayCollectUI.timeoutSeconds) {
-                try await self.collectOnce(
+                try await self.session.collect(
                     amountMinorUnits: amountMinorUnits,
                     currencyCode: currencyCode,
                     reference: reference,
@@ -70,30 +82,81 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
                     organizationName: organizationName
                 )
             }
-        } catch is CancellationError {
-            await cancelCollect()
-            throw CancellationError()
-        } catch let error as TapToPayCollectError {
-            await cancelCollect()
-            throw error
         } catch {
             await cancelCollect()
-            if TapToPayCollectUI.isCancellation(error) {
+            if error is CancellationError || TapToPayCollectUI.isCancellation(error) {
                 throw CancellationError()
             }
             throw error
         }
     }
 
-    private func collectOnce(
+    /// 60 seconds, then the tap is abandoned and the gift stays unpaid on What.
+    private func withTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                await self.cancelCollect()
+                throw TapToPayCollectError.timedOut
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else {
+                throw TapToPayCollectError.timedOut
+            }
+            return first
+        }
+    }
+}
+
+// MARK: - Session
+
+/// All Stripe Terminal work, on the main actor. Terminal delivers delegate
+/// callbacks and completion blocks on the main thread, so main-actor isolation
+/// removes every lock this file used to need: only one step of one collect is
+/// ever outstanding, and only one place resumes it.
+@MainActor
+final class TapToPayTerminalSession {
+
+    /// Owned for the life of the process. Stripe asks for a fresh connection
+    /// token during connect and again during confirm; a provider that only the
+    /// `initWithTokenProvider` call ever referenced is deallocated by then.
+    private static let tokenProvider = FieldForgeConnectionTokenProvider()
+    private static var didInstallTokenProvider = false
+    private static let terminalDelegate = FieldForgeTerminalDelegate()
+
+    private let readerDelegate = FieldForgeTapToPayReaderDelegate()
+
+    /// Kept across collects. A connected reader is never rediscovered.
+    private var reader: Reader?
+    private var locationId = ""
+
+    /// The step that is currently waiting on Stripe. One collect runs one step
+    /// at a time, so a single slot covers discovery, connect, retrieve and
+    /// confirm. `abort` unblocks the awaiting step if Stripe never calls back.
+    private var outstandingCancelable: Cancelable?
+    private var abortOutstanding: (() -> Void)?
+
+    init() {
+        readerDelegate.onDisconnect = { [weak self] in
+            self?.reader = nil
+        }
+    }
+
+    // MARK: Collect
+
+    func collect(
         amountMinorUnits: Int,
         currencyCode: String,
         reference: String,
         stripeAccount: String?,
         organizationName: String
     ) async throws -> ProcessorChargeResult {
-        try await ensureReaderConnected()
-        try await requireConnectedReader()
+
+        try await connectIfNeeded()
 
         let clientSecret = try await createCardPresentIntent(
             amountMinorUnits: amountMinorUnits,
@@ -102,45 +165,26 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
             stripeAccount: stripeAccount
         )
 
-        let retrieved: PaymentIntent = try await stripeFirst { finish in
-            await MainActor.run {
-                self.catchingStripe {
-                    Terminal.shared.retrievePaymentIntent(clientSecret: clientSecret) { intent, error in
-                        finish(intent, error)
-                    }
-                } failure: { error in
-                    finish(nil, error)
-                }
-                return nil as Cancelable?
+        let retrieved: PaymentIntent = try await awaitingStripe { finish in
+            Terminal.shared.retrievePaymentIntent(clientSecret: clientSecret) { intent, error in
+                finish(intent, error)
+            }
+            return nil
+        }
+
+        // "Hold card to top of iPhone". The reader is already connected, so
+        // nothing on this path can start discovery.
+        let confirmed: PaymentIntent = try await awaitingStripe { finish in
+            Terminal.shared.processPaymentIntent(
+                retrieved,
+                collectConfig: nil,
+                confirmConfig: nil
+            ) { intent, error in
+                finish(intent, error)
             }
         }
 
-        // Hold-card UI. Must not start discovery here — the Reader is already
-        // connected from ensureReaderConnected.
-        let confirmed: PaymentIntent = try await stripeFirst(storeAsCollect: true) { finish in
-            await MainActor.run { () -> Cancelable? in
-                var stored: Cancelable?
-                self.catchingStripe {
-                    stored = Terminal.shared.processPaymentIntent(
-                        retrieved,
-                        collectConfig: nil,
-                        confirmConfig: nil
-                    ) { intent, error in
-                        finish(intent, error)
-                    }
-                } failure: { error in
-                    finish(nil, error)
-                }
-                if let stored {
-                    self.state.collectCancelable = stored
-                }
-                return stored
-            }
-        }
-
-        let status = await MainActor.run {
-            Terminal.stringFromPaymentIntentStatus(confirmed.status)
-        }
+        let status = Terminal.stringFromPaymentIntentStatus(confirmed.status)
         guard status == "succeeded" else {
             throw ProcessorError.declined(
                 status.isEmpty
@@ -157,171 +201,272 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
         )
     }
 
-    // MARK: Reader
+    // MARK: Connect
 
-    private func ensureReaderConnected() async throws {
+    private func connectIfNeeded() async throws {
         guard TapToPayEntitlement.canAcceptContactlessOnThisBuild else {
             throw TapToPayCollectError.deviceOrEntitlement
         }
 
+        // Azure first. A missing Terminal location is an alert on What, not a
+        // discovery attempt — `discoverReaders` without a location is the call
+        // that fails in the least explainable way.
         let token = try await FieldForgeConnectionTokenProvider.fetch()
-        state.locationID = token.locationId
-        guard !state.locationID.isEmpty else {
+        guard !token.locationId.isEmpty else {
             throw TapToPayCollectError.missingLocation
         }
+        locationId = token.locationId
 
-        try await installTokenProviderIfNeeded()
+        installTokenProviderIfNeeded()
 
-        let alreadyConnected = await MainActor.run {
-            Terminal.shared.connectionStatus == .connected
-        }
-        if alreadyConnected { return }
+        if Terminal.shared.connectionStatus == .connected { return }
+        // A reader we kept but are no longer connected to is stale.
+        reader = nil
 
-        let reader: Reader
-        if let kept = state.reader {
-            reader = kept
-        } else {
-            reader = try await discoverTapToPayReader()
-            state.reader = reader
-        }
-
-        let locationId = state.locationID
-        guard !locationId.isEmpty else {
-            throw TapToPayCollectError.missingLocation
+        let supported = Terminal.shared.supportsReaders(
+            of: .tapToPay,
+            discoveryMethod: .tapToPay,
+            simulated: false
+        )
+        if case .failure(let error) = supported {
+            throw error
         }
 
-        let connectionConfig = try await MainActor.run {
-            try TapToPayConnectionConfigurationBuilder(
-                delegate: self.readerDelegate,
+        let attempt = TapToPayConnectAttempt(
+            locationId: locationId,
+            readerDelegate: readerDelegate
+        )
+        abortOutstanding = { [weak attempt] in attempt?.cancel() }
+        defer { abortOutstanding = nil }
+
+        do {
+            reader = try await attempt.run()
+        } catch {
+            reader = nil
+            throw error
+        }
+
+        guard Terminal.shared.connectionStatus == .connected else {
+            reader = nil
+            throw ProcessorError.server(status: 503, message: "Tap to Pay is not connected.")
+        }
+    }
+
+    private func installTokenProviderIfNeeded() {
+        guard !Self.didInstallTokenProvider else { return }
+        if !Terminal.isInitialized() {
+            Terminal.initWithTokenProvider(Self.tokenProvider)
+        }
+        // Connection status and payment status, for the log. Set once, and
+        // before anything asks Terminal to do work.
+        Terminal.shared.delegate = Self.terminalDelegate
+        Self.didInstallTokenProvider = true
+    }
+
+    // MARK: Cancel
+
+    /// Cancels whatever Stripe step is outstanding and unblocks the awaiting
+    /// caller. Safe when idle, and never cancels a finished step.
+    func cancelOutstanding() {
+        let cancelable = outstandingCancelable
+        outstandingCancelable = nil
+        cancelable?.cancel { _ in }
+        let abort = abortOutstanding
+        abortOutstanding = nil
+        abort?()
+    }
+
+    /// Bridges one Stripe completion block to `async`. `start` runs on the main
+    /// actor, hands back the step's `Cancelable` if it has one, and reports
+    /// through `finish` exactly once — later callbacks are dropped rather than
+    /// resuming a continuation twice.
+    private func awaitingStripe<T>(
+        _ start: @escaping (@escaping (T?, Error?) -> Void) -> Cancelable?
+    ) async throws -> T {
+        let once = StripeOnce<T>()
+        abortOutstanding = { [weak once] in once?.deliver(nil, CancellationError()) }
+        defer {
+            abortOutstanding = nil
+            outstandingCancelable = nil
+        }
+        return try await once.run { finish in
+            let cancelable = start(finish)
+            self.outstandingCancelable = cancelable
+        }
+    }
+}
+
+// MARK: - One connect attempt
+
+/// A single `discoverReaders` and the `connectReader` it leads to.
+///
+/// Connect is started from `didUpdateDiscoveredReaders`, which is the sample's
+/// shape and the reason discovery is only ever started once: a successful
+/// connect is what ends discovery, so there is no window in which a second
+/// discovery could be started underneath the hold-card sheet.
+@MainActor
+private final class TapToPayConnectAttempt: NSObject, DiscoveryDelegate {
+
+    private let locationId: String
+    private let readerDelegate: TapToPayReaderDelegate
+
+    private var continuation: CheckedContinuation<Reader, Error>?
+    private var isFinished = false
+    private var didStartConnect = false
+    private var discoverCancelable: Cancelable?
+
+    init(locationId: String, readerDelegate: TapToPayReaderDelegate) {
+        self.locationId = locationId
+        self.readerDelegate = readerDelegate
+        super.init()
+    }
+
+    func run() async throws -> Reader {
+        let config = try TapToPayDiscoveryConfigurationBuilder().build()
+        return try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            self.discoverCancelable = Terminal.shared.discoverReaders(
+                config,
+                delegate: self
+            ) { error in
+                // Discovery has stopped. A successful connect stops it with no
+                // error, and that case has already finished this attempt.
+                Task { @MainActor [weak self] in
+                    guard let self, !self.isFinished else { return }
+                    if let error {
+                        self.finish(.failure(error))
+                    } else if !self.didStartConnect {
+                        self.finish(.failure(ProcessorError.server(
+                            status: 503,
+                            message: "This iPhone could not start Tap to Pay."
+                        )))
+                    }
+                }
+            }
+        }
+    }
+
+    nonisolated func terminal(_ terminal: Terminal, didUpdateDiscoveredReaders readers: [Reader]) {
+        let first = readers.first
+        Task { @MainActor [weak self] in
+            guard let self, let reader = first else { return }
+            guard !self.isFinished, !self.didStartConnect else { return }
+            self.didStartConnect = true
+            self.connect(to: reader)
+        }
+    }
+
+    private func connect(to reader: Reader) {
+        let config: TapToPayConnectionConfiguration
+        do {
+            config = try TapToPayConnectionConfigurationBuilder(
+                delegate: readerDelegate,
                 locationId: locationId
             )
             .setMerchantDisplayName(nil)
             .setTosAcceptancePermitted(true)
             .build()
+        } catch {
+            finish(.failure(error))
+            return
         }
 
-        do {
-            _ = try await stripeFirst { finish in
-                await MainActor.run {
-                    self.catchingStripe {
-                        Terminal.shared.connectReader(reader, connectionConfig: connectionConfig) { connected, error in
-                            finish(connected, error)
-                        }
-                    } failure: { error in
-                        finish(nil, error)
-                    }
-                    return nil as Cancelable?
+        Terminal.shared.connectReader(reader, connectionConfig: config) { connected, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let connected {
+                    self.finish(.success(connected))
+                } else {
+                    self.finish(.failure(error ?? ProcessorError.server(
+                        status: 503,
+                        message: TapToPayCollectUI.contactlessFailureMessage
+                    )))
                 }
             }
-        } catch {
-            // Stale reader after a failed connect — next Collect rediscovers.
-            state.clearReader()
-            throw error
-        }
-        // Connect completes discovery. Do not cancel the Cancelable; do not
-        // discover again.
-        state.discoverCancelable = nil
-    }
-
-    private func requireConnectedReader() async throws {
-        let connected = await MainActor.run {
-            Terminal.shared.connectionStatus == .connected
-        }
-        guard connected else {
-            state.clearReader()
-            throw ProcessorError.server(
-                status: 503,
-                message: "Tap to Pay is not connected."
-            )
         }
     }
 
-    /// At most once per collect. Keep the Reader. Do not cancel discovery
-    /// after a reader — connectReader ends discovery. A second discoverReaders
-    /// after the hold-card UI is up is the SIGABRT.
-    private func discoverTapToPayReader() async throws -> Reader {
-        if let kept = state.reader { return kept }
-        guard state.beginDiscovery() else {
-            if let kept = state.reader { return kept }
-            throw ProcessorError.server(
-                status: 503,
-                message: "Tap to Pay discovery is already running."
-            )
+    /// Only reached from the timeout or the staffer's Cancel. Discovery that
+    /// already produced a reader is left alone — cancelling it is what used to
+    /// abort the session under the hold-card sheet.
+    func cancel() {
+        if !didStartConnect {
+            let cancelable = discoverCancelable
+            discoverCancelable = nil
+            cancelable?.cancel { _ in }
         }
+        finish(.failure(CancellationError()))
+    }
 
-        let supported = await MainActor.run {
-            Terminal.shared.supportsReaders(
-                of: .tapToPay,
-                discoveryMethod: .tapToPay,
-                simulated: false
-            )
-        }
-        if case .failure(let error) = supported {
-            state.abortDiscovery()
-            throw error
-        }
-
-        let config: TapToPayDiscoveryConfiguration
-        do {
-            config = try await MainActor.run {
-                try TapToPayDiscoveryConfigurationBuilder().build()
-            }
-        } catch {
-            state.abortDiscovery()
-            throw error
-        }
-
-        let (stream, continuation) = AsyncThrowingStream<Reader, Error>.makeStream()
-        let once = StreamOnce(continuation)
-        let relay = DiscoveryRelay { readers in
-            if let reader = readers.first {
-                once.succeed(reader)
-            }
-        }
-        discoveryDelegate = relay
-
-        await MainActor.run {
-            self.catchingStripe {
-                let cancelable = Terminal.shared.discoverReaders(config, delegate: relay) { error in
-                    // Success already claimed the gate. A nil error after a
-                    // reader must be ignored — not a second finish.
-                    once.fail(error)
-                }
-                self.state.discoverCancelable = cancelable
-            } failure: { error in
-                once.fail(error)
-            }
-        }
-
-        do {
-            for try await reader in stream {
-                state.reader = reader
-                return reader
-            }
-            state.abortDiscovery()
-            throw ProcessorError.server(status: 503, message: "This iPhone could not start Tap to Pay.")
-        } catch {
-            if state.reader == nil {
-                state.abortDiscovery()
-            }
+    private func finish(_ result: Result<Reader, Error>) {
+        guard !isFinished else { return }
+        isFinished = true
+        discoverCancelable = nil
+        guard let continuation else { return }
+        self.continuation = nil
+        switch result {
+        case .success(let reader):
+            continuation.resume(returning: reader)
+        case .failure(let error):
             if TapToPayCollectUI.isCancellation(error) {
-                throw CancellationError()
+                continuation.resume(throwing: CancellationError())
+            } else {
+                continuation.resume(throwing: error)
             }
-            throw error
+        }
+    }
+}
+
+/// Resumes at most once. Stripe can call a completion block again after the
+/// step is over — most often the discover completion firing with a nil error
+/// once a connect ended discovery — and a second resume of a checked
+/// continuation traps.
+@MainActor
+private final class StripeOnce<T> {
+
+    private var continuation: CheckedContinuation<T, Error>?
+    private var isFinished = false
+
+    func run(_ start: (@escaping (T?, Error?) -> Void) -> Void) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            start { value, error in
+                Task { @MainActor [weak self] in
+                    self?.deliver(value, error)
+                }
+            }
         }
     }
 
-    private func installTokenProviderIfNeeded() async throws {
-        guard !state.tokenProviderInstalled else { return }
-        await MainActor.run {
-            if !Terminal.isInitialized() {
-                Terminal.initWithTokenProvider(FieldForgeConnectionTokenProvider())
-            }
+    func deliver(_ value: T?, _ error: Error?) {
+        guard !isFinished else { return }
+        isFinished = true
+        guard let continuation else { return }
+        self.continuation = nil
+        if let value {
+            continuation.resume(returning: value)
+            return
         }
-        state.tokenProviderInstalled = true
+        if let error {
+            if TapToPayCollectUI.isCancellation(error) {
+                continuation.resume(throwing: CancellationError())
+            } else {
+                continuation.resume(throwing: error)
+            }
+            return
+        }
+        continuation.resume(throwing: ProcessorError.server(
+            status: 503,
+            message: TapToPayCollectUI.contactlessFailureMessage
+        ))
     }
+}
 
-    private func createCardPresentIntent(
+// MARK: - PaymentIntent from Azure
+
+extension TapToPayTerminalSession {
+
+    fileprivate func createCardPresentIntent(
         amountMinorUnits: Int,
         fundName: String,
         organizationName: String,
@@ -335,8 +480,7 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
         ) {
             return combined
         }
-        let url = await MainActor.run { StripePaymentSettings.shared.createPaymentIntentURL }
-        guard let url else {
+        guard let url = StripePaymentSettings.shared.createPaymentIntentURL else {
             throw ProcessorError.notConfigured
         }
         return try await postCardPresentIntent(
@@ -348,14 +492,18 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
         )
     }
 
+    /// `POST /api/connection-token` with an amount returns a `card_present`
+    /// client secret alongside the connection token. Older deployments answer
+    /// without one; that is not an error, it just means the separate
+    /// create-payment-intent route is used instead.
     private func createIntentViaConnectionToken(
         amountMinorUnits: Int,
         fundName: String,
         organizationName: String,
         stripeAccount: String?
     ) async throws -> String? {
-        let url = await MainActor.run { StripePaymentSettings.shared.terminalConnectionTokenURL }
-        guard let url else { return nil }
+        guard let url = StripePaymentSettings.shared.terminalConnectionTokenURL else { return nil }
+
         struct Body: Encodable {
             let amount: Int
             let currency: String
@@ -403,12 +551,10 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
         guard let http = response as? HTTPURLResponse else { throw ProcessorError.malformedResponse }
         let reply = (try? JSONDecoder().decode(Reply.self, from: data)) ?? Reply()
         if !reply.resolvedLocation.isEmpty {
-            state.locationID = reply.resolvedLocation
-        }
-        if (200..<300).contains(http.statusCode), let secret = reply.resolvedClientSecret, !secret.isEmpty {
-            return secret
+            locationId = reply.resolvedLocation
         }
         if (200..<300).contains(http.statusCode) {
+            if let secret = reply.resolvedClientSecret, !secret.isEmpty { return secret }
             return nil
         }
         if http.statusCode == 404 { return nil }
@@ -476,7 +622,7 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
         guard let http = response as? HTTPURLResponse else { throw ProcessorError.malformedResponse }
         let reply = (try? JSONDecoder().decode(Reply.self, from: data)) ?? Reply()
         if !reply.resolvedLocation.isEmpty {
-            state.locationID = reply.resolvedLocation
+            locationId = reply.resolvedLocation
         }
         if let message = reply.error, message == TapToPayCollectUI.missingLocationMessage {
             throw TapToPayCollectError.missingLocation
@@ -486,199 +632,26 @@ final class StripeTerminalTapToPayBackend: NSObject, TapToPayBackend, @unchecked
         }
         return secret
     }
-
-    /// First Stripe callback wins. Later callbacks (nil error after a reader)
-    /// are ignored. Does not cancel on success — that aborted discovery.
-    /// `start` is awaited on MainActor by callers so the Cancelable is stored
-    /// before we wait, and Terminal UI work is not fire-and-forget off main.
-    private func stripeFirst<T: Sendable>(
-        storeAsCollect: Bool = false,
-        start: (@escaping @Sendable (T?, Error?) -> Void) async -> Cancelable?
-    ) async throws -> T {
-        let (stream, continuation) = AsyncThrowingStream<T, Error>.makeStream()
-        let once = StreamOnce(continuation)
-        let finish: @Sendable (T?, Error?) -> Void = { value, error in
-            if let value {
-                once.succeed(value)
-            } else {
-                once.fail(error)
-            }
-        }
-        let cancelable = await start(finish)
-        if storeAsCollect, let cancelable {
-            state.collectCancelable = cancelable
-        }
-
-        for try await value in stream {
-            return value
-        }
-        throw CancellationError()
-    }
-
-    private func withTimeout<T: Sendable>(
-        seconds: TimeInterval,
-        operation: @escaping () async throws -> T
-    ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                await self.cancelCollect()
-                throw TapToPayCollectError.timedOut
-            }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else {
-                throw TapToPayCollectError.timedOut
-            }
-            return first
-        }
-    }
-
-    /// Stripe raises NSException (not Swift Error). Catch and surface as an
-    /// alert instead of aborting the process under the debugger.
-    private func catchingStripe(_ work: () -> Void, failure: (Error) -> Void) {
-        var nsError: NSError?
-        let ok = FFCatchException({
-            work()
-        }, &nsError)
-        if !ok {
-            failure(nsError ?? ProcessorError.server(
-                status: 500,
-                message: nsError?.localizedDescription ?? "Tap to Pay failed."
-            ))
-        }
-    }
-
 }
 
-// MARK: - Once / state
+// MARK: - Delegates
 
-/// Yields or throws at most once. Thread-safe. A nil Stripe completion after
-/// success does not finish again.
-private final class StreamOnce<T: Sendable>: @unchecked Sendable {
-    private let gate = TapToPayCallbackGate()
-    private let continuation: AsyncThrowingStream<T, Error>.Continuation
+/// Terminal-wide status, for the log. Both methods are optional; nothing in the
+/// capture flow depends on them.
+private final class FieldForgeTerminalDelegate: NSObject, TerminalDelegate {
 
-    init(_ continuation: AsyncThrowingStream<T, Error>.Continuation) {
-        self.continuation = continuation
+    func terminal(_ terminal: Terminal, didChangeConnectionStatus status: ConnectionStatus) {
+        AppLog.payments.info("Terminal connection status \(status.rawValue, privacy: .public)")
     }
 
-    func succeed(_ value: T) {
-        guard gate.claim() else { return }
-        continuation.yield(value)
-        continuation.finish()
-    }
-
-    func fail(_ error: Error?) {
-        guard gate.claim() else { return }
-        if let error {
-            if TapToPayCollectUI.isCancellation(error) {
-                continuation.finish(throwing: CancellationError())
-            } else {
-                continuation.finish(throwing: error)
-            }
-        } else {
-            continuation.finish(throwing: ProcessorError.server(
-                status: 503,
-                message: "This iPhone could not start Tap to Pay."
-            ))
-        }
-    }
-}
-
-private final class CollectState: @unchecked Sendable {
-    private struct Box {
-        var locationID = ""
-        var tokenProviderInstalled = false
-        var reader: Reader?
-        var discoverCancelable: Cancelable?
-        var collectCancelable: Cancelable?
-    }
-
-    private let discoveryOnce = TapToPayDiscoveryOnce()
-    private let lock = OSAllocatedUnfairLock(initialState: Box())
-
-    var locationID: String {
-        get { lock.withLock { $0.locationID } }
-        set { lock.withLock { $0.locationID = newValue } }
-    }
-
-    var tokenProviderInstalled: Bool {
-        get { lock.withLock { $0.tokenProviderInstalled } }
-        set { lock.withLock { $0.tokenProviderInstalled = newValue } }
-    }
-
-    var reader: Reader? {
-        get { lock.withLock { $0.reader } }
-        set { lock.withLock { $0.reader = newValue } }
-    }
-
-    var collectCancelable: Cancelable? {
-        get { lock.withLock { $0.collectCancelable } }
-        set { lock.withLock { $0.collectCancelable = newValue } }
-    }
-
-    var discoverCancelable: Cancelable? {
-        get { lock.withLock { $0.discoverCancelable } }
-        set { lock.withLock { $0.discoverCancelable = newValue } }
-    }
-
-    /// True if this collect may start discoverReaders.
-    func beginDiscovery() -> Bool {
-        discoveryOnce.begin()
-    }
-
-    func abortDiscovery() {
-        lock.withLock { box in
-            box.reader = nil
-            box.discoverCancelable = nil
-        }
-        discoveryOnce.reset()
-    }
-
-    func clearReader() {
-        lock.withLock { box in
-            box.reader = nil
-        }
-        discoveryOnce.reset()
-    }
-
-    func cancelAll() {
-        let pair: (Cancelable?, Cancelable?) = lock.withLock { box in
-            let discover = box.discoverCancelable
-            let collect = box.collectCancelable
-            box.discoverCancelable = nil
-            box.collectCancelable = nil
-            return (discover, collect)
-        }
-        pair.0?.cancel { _ in }
-        pair.1?.cancel { _ in }
-    }
-}
-
-private final class DiscoveryRelay: NSObject, DiscoveryDelegate, @unchecked Sendable {
-    private let onReaders: @Sendable ([Reader]) -> Void
-    private let delivered = OSAllocatedUnfairLock(initialState: false)
-
-    init(onReaders: @escaping @Sendable ([Reader]) -> Void) {
-        self.onReaders = onReaders
-    }
-
-    func terminal(_ terminal: Terminal, didUpdateDiscoveredReaders readers: [Reader]) {
-        let first = delivered.withLock { flag -> Bool in
-            if flag || readers.isEmpty { return false }
-            flag = true
-            return true
-        }
-        guard first else { return }
-        onReaders(readers)
+    func terminal(_ terminal: Terminal, didChangePaymentStatus status: PaymentStatus) {
+        AppLog.payments.info("Terminal payment status \(status.rawValue, privacy: .public)")
     }
 }
 
 private final class FieldForgeTapToPayReaderDelegate: NSObject, TapToPayReaderDelegate {
-    var onDisconnect: (@Sendable () -> Void)?
+
+    var onDisconnect: (() -> Void)?
 
     func tapToPayReader(
         _ reader: Reader,
@@ -702,7 +675,12 @@ private final class FieldForgeTapToPayReaderDelegate: NSObject, TapToPayReaderDe
     }
 }
 
-final class FieldForgeConnectionTokenProvider: ConnectionTokenProvider {
+// MARK: - Connection token
+
+/// Owned by `TapToPayTerminalSession` for the life of the process. Stripe holds
+/// this weakly and calls it again during connect and confirm.
+final class FieldForgeConnectionTokenProvider: NSObject, ConnectionTokenProvider {
+
     func fetchConnectionToken(_ completion: @escaping ConnectionTokenCompletionBlock) {
         Task {
             do {
@@ -714,6 +692,8 @@ final class FieldForgeConnectionTokenProvider: ConnectionTokenProvider {
         }
     }
 
+    /// `POST /api/connection-token` on Azure. `STRIPE_SECRET_KEY` and
+    /// `STRIPE_TERMINAL_LOCATION_ID` live there; neither is ever on this iPhone.
     static func fetch() async throws -> (secret: String, locationId: String) {
         let (url, accountID) = await MainActor.run {
             (

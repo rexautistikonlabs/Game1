@@ -242,7 +242,15 @@ arrived (`Gift.isPaymentConfirmed` gates it, and there is a test for that).
   pay link with `Stripe-Account` so funds land on *their* Stripe. No connected
   account charges the platform (current Rex test behavior). Downloading orgs
   never see Azure, merchant IDs, CSRs, or secret keys.
-- **Tap to Pay on iPhone** — selecting the tile is not a charge. **Collect**
+- **Tap to Pay on iPhone — off by default.** The tile is present but disabled
+  and captioned *“Off”* until someone turns it on in **Settings → Payments**.
+  While it is off, no code path in the app constructs or calls Stripe Terminal:
+  the method cannot be selected, so Collect cannot be reached, and the backend
+  object is never created. The donor pay link is the primary card path and is
+  unaffected. This is deliberate — `discoverReaders` has aborted the process on
+  some device/profile combinations, and a crash mid-capture costs a gift, so the
+  feature stays behind a switch the operator flips only after testing it on
+  their own iPhone. Once on: selecting the tile is still not a charge. **Collect**
   (or Next on What) starts Stripe Terminal: Azure `POST /api/connection-token`
   → `{ secret, locationId }` (and a `card_present` PaymentIntent when amount is
   sent), then Apple’s terms / reader discovery the first time, then **Hold card
@@ -700,8 +708,8 @@ keys never sit on iOS. No QR codes in this pass.
 **Development devices only.** Do not send Apple Tap to Pay videos until Collect
 actually opens the hold-card UI on a physical iPhone.
 
-Needs **both** the Apple entitlement and Stripe Terminal. Simulator and a
-missing grant alert *“Tap to Pay needs a registered iPhone and Apple
+Needs the **Settings → Payments** switch (off by default) plus **both** the
+Apple entitlement and Stripe Terminal. Simulator and a missing grant alert *“Tap to Pay needs a registered iPhone and Apple
 development entitlement”* and stay on What. See [TAP_TO_PAY.md](TAP_TO_PAY.md).
 
 The iOS app **does not** hardcode Terminal location ids or secret keys. Location
@@ -720,25 +728,65 @@ comes from Azure env `STRIPE_TERMINAL_LOCATION_ID`. `sk_` never sits in Settings
    `create-payment-intent`) carries the same location. Pay-link routes are
    unchanged.
 
+#### The switch, and why it is off
+
+`Settings → Payments → Tap to Pay on iPhone` ships **off** and persists per
+device in `UserDefaults` (`fieldforge.stripe.tapToPayEnabled`, absent = off).
+
+While it is off:
+
+- `TapToPayProvider.availability()` returns `.tapToPayTurnedOff`, so the method
+  tile is disabled and captioned *“Off”*. `GiftStepView.select(_:)` refuses a
+  disabled tile, so the Collect button is unreachable.
+- `TapToPayProvider.collect(_:)` refuses with `tap-to-pay-off` before any other
+  check, and `ensureLiveBackendIfNeeded()` returns without constructing
+  `StripeTerminalTapToPayBackend`. Nothing touches the `StripeTerminal` module.
+- Text and email pay links, cash, cheque, in-kind, pledge and recorded card are
+  all unaffected.
+
+Turn it on only after a real contactless card has worked on that iPhone.
+
 #### End-to-end on a registered iPhone
 
-`discoverReaders` aborted (SIGABRT / `pthread_kill`) when it ran on the main
-thread with the amount keyboard still up, then finished twice. Stripe / Apple
-Tap to Pay also throw **NSException** while presenting UI; Xcode **All
-Exceptions** stops there even though FieldForge catches them.
+`discoverReaders` aborted (SIGABRT / `pthread_kill`) mid-collect. The collect
+path was rebuilt in the shape of Stripe's own sample: one main-actor line, the
+connection-token provider owned for the life of the process (Stripe re-asks for
+a token during connect *and* during confirm — a provider nobody retained was
+being called after it was freed), `Terminal.shared.delegate` set once before any
+work, `discoverReaders` started at most once, and `connectReader` started from
+inside `didUpdateDiscoveredReaders` so that a successful connect is what ends
+discovery. Nothing cancels a discovery that already produced a reader.
+
+Stripe / Apple Tap to Pay also throw **NSException** while presenting UI; Xcode
+**All Exceptions** stops there even though the SDK catches them itself. Test
+from the icon, not the debugger.
 
 1. Set `STRIPE_TERMINAL_LOCATION_ID` on Azure `fieldforgepay` (the Test
    Terminal location already created in the Dashboard). Never put that id in
    the iOS project.
-2. Republish `azure-function/`.
-3. Stop Xcode. Disable **All Exceptions**. Delete FieldForge from the iPhone.
-4. Install this build and **launch from the icon** (no debugger).
-5. Capture → gift → **Tap to Pay** → **Collect**. First run accepts Apple /
-   Stripe Tap to Pay terms. Hold a **physical contactless card** to the **top
-   of the phone**.
-6. Gift is received only after PaymentIntent `succeeded`; then Document is
-   allowed. Cancel / fail stay on What. Today always paints (collect-in-flight
-   is cleared at launch). CloudKit is not opened at launch.
+2. Republish the Azure function app.
+3. Stop Xcode. Disable **All Exceptions** (Breakpoint navigator → the
+   *All Exceptions* breakpoint → delete or uncheck it). Delete FieldForge from
+   the iPhone.
+4. Install this build and **launch it from the app icon on the Home Screen** —
+   not with ⌘R, and not attached to the debugger. A Terminal session under the
+   debugger stops on exceptions the SDK handles internally and looks like a
+   crash when it is not one.
+5. **Settings → Payments → Tap to Pay on iPhone → on.** It is off in a fresh
+   install by design.
+6. Capture → gift → enter an amount → **Tap to Pay** → **Collect**. First run
+   accepts Apple / Stripe Tap to Pay terms. Hold a **physical contactless card**
+   flat against the **top of the phone**, above the camera bump, and keep it
+   there until the sheet reports a result. In test mode use a Stripe Terminal
+   test card; a simulated reader is not available on this path.
+7. Gift is received only after PaymentIntent `succeeded`; then Document is
+   allowed. Cancel returns to What at once. Sixty seconds with no card times
+   out, leaves the gift unpaid, and issues no letter.
+8. If it still fails: turn the switch back off. The donor pay link is the
+   primary card path and needs nothing on the phone. Today always paints
+   (collect-in-flight is cleared in `App.init` before the first frame) and
+   CloudKit is not opened at launch, so a bad tap cannot white-screen the next
+   launch.
 
 Staff Wallet stays off. Text and email pay links stay. See
 [TAP_TO_PAY.md](TAP_TO_PAY.md).

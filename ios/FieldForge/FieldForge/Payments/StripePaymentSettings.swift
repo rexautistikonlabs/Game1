@@ -46,6 +46,7 @@ final class StripePaymentSettings {
         static let backendURL = "fieldforge.stripe.backendURL"
         static let publishableKey = "fieldforge.stripe.publishableKey"
         static let platformDebug = "fieldforge.stripe.platformDebug"
+        static let tapToPayEnabled = "fieldforge.stripe.tapToPayEnabled"
     }
 
     private let defaults: UserDefaults
@@ -62,6 +63,17 @@ final class StripePaymentSettings {
     /// seven taps on the version row.
     var showsPlatformDebug: Bool {
         didSet { defaults.set(showsPlatformDebug, forKey: Keys.platformDebug) }
+    }
+
+    /// Tap to Pay on iPhone ships **off**. Stripe Terminal's `discoverReaders`
+    /// aborts the process on some devices and profiles, and a crash mid-capture
+    /// costs a gift. The donor pay link is the primary card path; an operator
+    /// who has tested Tap to Pay on their own iPhone turns it on here.
+    ///
+    /// While this is false nothing in the app touches `StripeTerminal`: the
+    /// method tile is disabled and Collect refuses before the SDK is loaded.
+    var isTapToPayEnabled: Bool {
+        didSet { defaults.set(isTapToPayEnabled, forKey: Keys.tapToPayEnabled) }
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -85,6 +97,8 @@ final class StripePaymentSettings {
             self.showsPlatformDebug = false
             #endif
         }
+        // Absent key means off. Never default this on.
+        self.isTapToPayEnabled = defaults.bool(forKey: Keys.tapToPayEnabled)
     }
 
     /// Apple Pay merchant identifier. Already in FieldForge.entitlements.

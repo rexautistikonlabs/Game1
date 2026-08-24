@@ -538,50 +538,26 @@ struct TextPayLinkTests {
         #expect(TapToPayCollectUI.timeoutSeconds == 60)
     }
 
-    @Test("Discover callbacks finish at most once")
-    func discoverCallbackGateClaimsOnce() {
-        let gate = TapToPayCallbackGate()
-        #expect(gate.claim())
-        #expect(!gate.claim())
-        #expect(!gate.claim())
+    @Test("Tap to Pay ships off, so nothing in capture can reach Stripe Terminal")
+    @MainActor
+    func tapToPayIsOffByDefault() {
+        let defaults = UserDefaults(suiteName: "fieldforge.tests.tapToPayDefault")!
+        defaults.removePersistentDomain(forName: "fieldforge.tests.tapToPayDefault")
+        let settings = StripePaymentSettings(defaults: defaults)
+        #expect(!settings.isTapToPayEnabled)
+
+        settings.isTapToPayEnabled = true
+        let reopened = StripePaymentSettings(defaults: defaults)
+        #expect(reopened.isTapToPayEnabled)
+        defaults.removePersistentDomain(forName: "fieldforge.tests.tapToPayDefault")
     }
 
-    @Test("A nil Stripe error after a reader does not replace success")
-    func nilErrorAfterReaderIsIgnored() {
-        let box = TapToPayFirstCompletion()
-        #expect(box.succeed())
-        #expect(!box.failIgnoringNilAfterSuccess(nil))
-        #expect(box.winner == .success)
-    }
-
-    @Test("discoverReaders starts at most once per collect")
-    func discoveryStartsAtMostOnce() {
-        let once = TapToPayDiscoveryOnce()
-        #expect(!once.hasStarted)
-        #expect(once.begin())
-        #expect(once.hasStarted)
-        #expect(!once.begin())
-        #expect(!once.begin())
-        once.reset()
-        #expect(!once.hasStarted)
-        #expect(once.begin())
-    }
-
-    @Test("A failed connect resets discovery so the next Collect rediscovers")
-    func failedConnectAllowsRediscover() {
-        let once = TapToPayDiscoveryOnce()
-        #expect(once.begin())
-        once.reset()
-        #expect(!once.hasStarted)
-        #expect(once.begin())
-    }
-
-    @Test("Success does not cancel the discover Cancelable; user cancel and timeout do")
-    func discoverCancelableOnlyOnCancelOrTimeout() {
-        #expect(!TapToPayDiscoverCancelPolicy.shouldCancelDiscover(on: .readerDelivered))
-        #expect(!TapToPayDiscoverCancelPolicy.shouldCancelDiscover(on: .connectSucceeded))
-        #expect(TapToPayDiscoverCancelPolicy.shouldCancelDiscover(on: .userCancel))
-        #expect(TapToPayDiscoverCancelPolicy.shouldCancelDiscover(on: .timeout))
+    @Test("The off state explains itself instead of failing on tap")
+    func tapToPayOffStateExplainsItself() {
+        #expect(PaymentUnavailableReason.tapToPayTurnedOff.shortLabel == "Off")
+        #expect(PaymentUnavailableReason.tapToPayTurnedOff.explanation
+            == TapToPayCollectUI.turnedOffMessage)
+        #expect(TapToPayCollectUI.turnedOffMessage.contains("pay link"))
     }
 
     @Test("Keyboard settles before Collect starts Terminal")
@@ -659,7 +635,7 @@ struct TextPayLinkTests {
         #expect(!TapToPaySession.collectInFlight)
     }
 
-    @Test("Tap to Pay collect on Simulator or a missing grant is the registered-iPhone alert")
+    @Test("Tap to Pay collect refuses before it can reach Stripe Terminal")
     @MainActor
     func tapToPayCollectRefusesWithoutDevice() async {
         let coordinator = PaymentCoordinator(reachability: Reachability(startImmediately: false))
@@ -672,13 +648,18 @@ struct TextPayLinkTests {
                 fundName: "General"
             )
         )
-        if TapToPayProvider.shouldRefuseCollectOnThisRuntime {
-            if case .failed(let failure) = outcome {
-                #expect(failure.diagnosticCode == TapToPayCollectUI.deviceOrEntitlementCode)
-                #expect(failure.message == TapToPayCollectUI.deviceOrEntitlementMessage)
-            } else {
-                Issue.record("Simulator / missing entitlement must not start Terminal collect")
-            }
+        guard case .failed(let failure) = outcome else {
+            Issue.record("Tap to Pay off / Simulator / missing grant must not start Terminal collect")
+            return
+        }
+        // Off is the shipped default and is checked first, before anything can
+        // construct the Stripe Terminal backend. With it on, Simulator and a
+        // build without Apple's grant still refuse.
+        if !StripePaymentSettings.shared.isTapToPayEnabled {
+            #expect(failure.diagnosticCode == TapToPayCollectUI.turnedOffCode)
+        } else if TapToPayProvider.shouldRefuseCollectOnThisRuntime {
+            #expect(failure.diagnosticCode == TapToPayCollectUI.deviceOrEntitlementCode)
+            #expect(failure.message == TapToPayCollectUI.deviceOrEntitlementMessage)
         }
     }
 

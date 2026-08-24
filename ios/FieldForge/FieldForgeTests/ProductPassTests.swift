@@ -211,8 +211,10 @@ struct CapturePaymentPathTests {
         #expect(coordinator.methodOptions.contains { $0.method == .pledge })
         let tap = coordinator.methodOptions.first { $0.method == .tapToPay }
         #expect(tap != nil)
-        // Selectable: Collect / Next is what starts Terminal (or the alert).
-        #expect(tap?.isEnabled == true)
+        // Tap to Pay ships off, so the tile is present but disabled and says
+        // why. Turning it on in Settings is what makes Collect start Terminal.
+        #expect(tap?.isEnabled == false)
+        #expect(tap?.unavailableReason == .tapToPayTurnedOff)
         #expect(!PaymentCoordinator.presentsStaffApplePayInCapture)
     }
 

@@ -4,7 +4,33 @@ FieldForge can take a contactless card on this iPhone via **Stripe Terminal**.
 Selecting the Tap to Pay tile is not a charge. **Collect** (or Next on What)
 starts Terminal collect.
 
-That path is gated on two things, both of which must be true at runtime:
+## It ships off
+
+**Settings → Payments → Tap to Pay on iPhone is off in a fresh install.** The
+donor pay link — text or email, paid on the donor's own phone — is the primary
+card path and needs nothing on this iPhone.
+
+`discoverReaders` has aborted the process (SIGABRT / `pthread_kill`) on some
+device and profile combinations, and a crash in the middle of capture costs a
+gift. Rather than ask a staffer to find that out in front of a donor, the
+feature sits behind a switch an operator flips only after a real contactless
+card has worked on that phone.
+
+While the switch is off, nothing in the app reaches `StripeTerminal`:
+
+| Where | What happens |
+| --- | --- |
+| Method tile | Present, disabled, captioned **Off**. `select(_:)` refuses a disabled tile, so Collect is unreachable. |
+| `TapToPayProvider.availability()` | `.tapToPayTurnedOff` |
+| `TapToPayProvider.collect(_:)` | Refuses with `tap-to-pay-off`, before every other check |
+| `ensureLiveBackendIfNeeded()` | Returns without constructing `StripeTerminalTapToPayBackend` |
+
+Stored per device as `fieldforge.stripe.tapToPayEnabled` in `UserDefaults`.
+An absent key means off — it is never defaulted on, in any build configuration.
+
+## When it is on
+
+That path is gated on two more things, both of which must be true at runtime:
 
 1. Apple entitlement `com.apple.developer.proximity-reader.payment.acceptance`
 2. Stripe Terminal SDK (already linked in `project.yml`)
@@ -104,23 +130,71 @@ Downloading orgs never request this entitlement, never see a CSR, and never
 see Azure. They tap **Connect Stripe** in Settings; FieldForge uses the
 platform merchant ID.
 
+## How collect is built
+
+One straight line, all of it on the main actor, in the shape of Stripe's own
+Tap to Pay sample:
+
+```
+dismiss keyboard
+  -> POST /api/connection-token          (Azure; secret + locationId)
+  -> empty locationId? alert, stop here  (discoverReaders is never called)
+  -> Terminal.initWithTokenProvider(...) (provider owned for the process)
+  -> Terminal.shared.delegate = ...
+  -> already connected? skip to retrieve
+  -> discoverReaders                     (once)
+  -> connectReader                       (started from didUpdateDiscoveredReaders)
+  -> retrievePaymentIntent
+  -> processPaymentIntent                ("Hold card to top of iPhone")
+```
+
+Five rules hold that line together:
+
+1. **The connection token provider is owned for the life of the process.**
+   Stripe re-asks for a token during connect *and* during confirm. Creating the
+   provider inline in the `initWithTokenProvider` call left nothing retaining
+   it, so the second ask called into freed memory — mid-tap, right after the
+   hold-card sheet came up.
+2. **`Terminal.shared.delegate` is set once**, before anything asks Terminal to
+   do work.
+3. **`discoverReaders` runs at most once per connect**, and the reader is kept
+   across collects. `connectReader` is started from inside
+   `didUpdateDiscoveredReaders` rather than after returning from discovery,
+   because a successful connect is what ends discovery — so there is no window
+   in which a second discovery could start underneath the hold-card sheet.
+4. **Nothing cancels a discovery that already produced a reader.** Cancel and
+   timeout cancel the `Cancelable` only while discovery is still looking.
+5. **Main-actor isolation instead of locks.** Terminal calls back on the main
+   thread, one step of one collect is outstanding at a time, and exactly one
+   place resumes each continuation. The `AsyncThrowingStream` relays, callback
+   gates and `OSAllocatedUnfairLock` boxes this file used to carry are gone.
+
+Sixty seconds with no card cancels the outstanding step and leaves the gift
+unpaid on What. Cancel returns to What immediately and never waits on Stripe's
+cancel completion.
+
 ## Device verification (no debugger)
 
-`discoverReaders` previously aborted with SIGABRT / `pthread_kill` when it ran
-on the main thread with the amount keyboard still up, then finished twice
-(reader from the delegate, then Stripe’s nil completion). Stripe Terminal and
-Apple Tap to Pay also raise **NSException** internally while presenting UI.
-Xcode’s **All Exceptions** breakpoint treats those as crashes even when
-FieldForge catches them with `FFCatchException`.
+Stripe Terminal and Apple Tap to Pay raise **NSException** internally while
+presenting UI. Xcode's **All Exceptions** breakpoint stops on those even though
+the SDK handles them itself, which looks exactly like a crash. Test from the
+Home Screen icon.
 
 On a registered iPhone:
 
 1. Stop Xcode (Product → Stop).
-2. Breakpoint navigator → disable **All Exceptions** (and Swift Error if on).
+2. Breakpoint navigator → delete or uncheck **All Exceptions** (and Swift Error
+   if it is on).
 3. Delete FieldForge from the iPhone.
-4. Install this build, then **launch from the icon** — not Run from Xcode.
-5. Capture → gift → Tap to Pay → **Collect**.
-6. Hold a physical contactless card to the **top** of the phone.
+4. Install this build, then **launch it from the app icon on the Home Screen** —
+   not ⌘R, not attached to the debugger.
+5. **Settings → Payments → Tap to Pay on iPhone → on.** Off is the shipped
+   default; a fresh install will not have it.
+6. Capture → gift → enter an amount → Tap to Pay → **Collect**.
+7. Hold a **physical contactless card** flat against the **top** of the phone,
+   above the camera bump, and keep it there until the sheet reports a result.
+   In test mode use a Stripe Terminal test card. There is no simulated reader
+   on this path.
 
 Staff Wallet stays off. Text and email pay links stay.
 
@@ -128,11 +202,17 @@ Staff Wallet stays off. Text and email pay links stay.
 
 Confirm all of these on the physical iPhone:
 
+- [ ] With the switch **off**, the Tap to Pay tile is disabled and captioned *Off*, and the gift can still be taken by pay link.
 - [ ] Hold-card UI appears (`Hold card to top of iPhone`).
 - [ ] No crash when a contactless card is presented at the top of the phone.
 - [ ] Cancel during hold-card returns cleanly to What (no hang, no abort).
+- [ ] Sixty seconds with no card times out, leaves the gift unpaid, and issues no letter.
 - [ ] Second Collect in the same session still works (fresh discover if the reader dropped; not a stale reader).
 - [ ] Failure alert shows if the card is pulled away or declined; the app does not abort.
+- [ ] Force-quit during hold-card, then relaunch from the icon: Today paints, no white screen.
+
+**If any of these fail, turn the switch back off.** The pay link is the primary
+donor path and does not depend on any of this.
 
 ## What this pass does not include
 

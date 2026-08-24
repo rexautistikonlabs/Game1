@@ -118,12 +118,27 @@ final class TapToPayProvider: PaymentProvider {
         }
     }
 
-    /// Stripe Terminal is constructed here, never at launch.
+    /// Stripe Terminal is constructed here, never at launch, and never while
+    /// Settings → Payments has Tap to Pay off.
     func ensureLiveBackendIfNeeded() {
         guard !usesInjectedBackend else { return }
+        guard Self.isTurnedOnInSettings else { return }
         if backend is TapToPayUnavailableBackend {
             backend = TapToPayBackendFactory.make()
         }
+    }
+
+    /// The ship-off switch. False means no code path may reach `StripeTerminal`.
+    static var isTurnedOnInSettings: Bool {
+        StripePaymentSettings.shared.isTapToPayEnabled
+    }
+
+    static var turnedOffFailure: PaymentFailure {
+        PaymentFailure(
+            message: TapToPayCollectUI.turnedOffMessage,
+            isRetryable: false,
+            diagnosticCode: TapToPayCollectUI.turnedOffCode
+        )
     }
 
     // MARK: Availability
@@ -175,6 +190,11 @@ final class TapToPayProvider: PaymentProvider {
     }
 
     func availability() -> PaymentUnavailableReason? {
+        // Off by default. The tile is disabled and explains itself rather than
+        // failing on tap, and nothing here loads Stripe Terminal.
+        if !usesInjectedBackend && !StripePaymentSettings.shared.isTapToPayEnabled {
+            return .tapToPayTurnedOff
+        }
         // The tile stays selectable. Collect is what starts Terminal — or
         // shows the registered-iPhone alert on Simulator / a missing grant.
         // Offline still disables: no card network authorises without a route.
@@ -192,6 +212,11 @@ final class TapToPayProvider: PaymentProvider {
     // MARK: Collect
 
     func collect(_ request: PaymentRequest) async -> PaymentOutcome {
+        // First gate, before anything can touch StripeTerminal. Tests that
+        // inject a backend are exercising the collect path deliberately.
+        if !usesInjectedBackend && !StripePaymentSettings.shared.isTapToPayEnabled {
+            return .failed(Self.turnedOffFailure)
+        }
         // Simulator and a missing Apple grant must not call Terminal APIs.
         // Selecting the method is not a charge; this is.
         if Self.shouldRefuseCollectOnThisRuntime {

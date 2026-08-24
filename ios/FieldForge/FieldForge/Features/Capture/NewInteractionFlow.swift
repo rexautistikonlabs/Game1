@@ -404,8 +404,11 @@ struct NewInteractionFlow: View {
             return
         }
 
-        // Keyboard under the Tap to Pay sheet crashed discoverReaders.
-        TapToPayKeyboard.resignNow()
+        // The number pad has to be gone before the overlay and Apple's reader
+        // sheet go up, not merely asked to leave: ProximityReader aborts with a
+        // first responder still up, and the pad was visibly sitting under the
+        // sheet. Settle it first, then show anything.
+        await TapToPayKeyboard.resignBeforeCollect()
 
         isCollectingTapToPay = true
         defer { isCollectingTapToPay = false }
@@ -431,6 +434,8 @@ struct NewInteractionFlow: View {
         case .cancelled:
             break
         case .failed(let failure):
+            // Includes the 60s timeout ("Timed out — try again or use pay
+            // link") and any Stripe or Apple error string, shown verbatim.
             if failure.diagnosticCode == TapToPayCollectUI.deviceOrEntitlementCode {
                 showsTapToPayDeviceAlert = true
             } else {
@@ -446,10 +451,14 @@ struct NewInteractionFlow: View {
         }
     }
 
-    /// Overlay Cancel. Must return to What immediately; do not wait on Stripe.
+    /// Overlay Cancel. Everything here is synchronous: the overlay goes, the
+    /// coordinator's in-flight lock lifts, and the collect task is cancelled,
+    /// all before this returns. Nothing waits on Stripe, so no SDK that
+    /// declines to call a completion block can strand the staffer.
     private func cancelTapToPayCollect() {
         isCollectingTapToPay = false
-        Task { await app.payments.cancelTapToPay() }
+        app.payments.cancelTapToPay()
+        Haptics.step()
     }
 
     private func advance(to next: Step) {

@@ -182,14 +182,21 @@ final class TapToPayTerminalSession {
         organizationName: String
     ) async throws -> ProcessorChargeResult {
 
+        // Between steps there is no Stripe callback to interrupt, so the only
+        // thing that honours a cancel here is checking for one. The gaps are
+        // real: two Azure round trips sit inside this method.
+        try Task.checkCancellation()
         try await connectIfNeeded()
 
+        try Task.checkCancellation()
         let clientSecret = try await createCardPresentIntent(
             amountMinorUnits: amountMinorUnits,
             fundName: reference,
             organizationName: organizationName,
             stripeAccount: stripeAccount
         )
+
+        try Task.checkCancellation()
 
         let retrieved: PaymentIntent = try await awaitingStripe { finish in
             try catchingTerminalException("retrievePaymentIntent") {
@@ -246,6 +253,7 @@ final class TapToPayTerminalSession {
             throw TapToPayCollectError.missingLocation
         }
         locationId = token.locationId
+        try Task.checkCancellation()
 
         try installTokenProviderIfNeeded()
 
@@ -365,8 +373,21 @@ private final class TapToPayConnectAttempt: NSObject, DiscoveryDelegate {
         // and the staffer's Cancel race this method) must not start it.
         guard !isFinished else { throw CancellationError() }
         let config = try TapToPayDiscoveryConfigurationBuilder().build()
-        return try await withCheckedThrowingContinuation { continuation in
+        return try await withTaskCancellationHandler {
+            try await runDiscovery(config)
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.cancel() }
+        }
+    }
+
+    private func runDiscovery(_ config: TapToPayDiscoveryConfiguration) async throws -> Reader {
+        try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
+            if isFinished {
+                self.continuation = nil
+                continuation.resume(throwing: CancellationError())
+                return
+            }
             do {
                 self.discoverCancelable = try catchingTerminalException("discoverReaders") {
                     Terminal.shared.discoverReaders(
@@ -483,13 +504,29 @@ private final class StripeOnce<T> {
     private var continuation: CheckedContinuation<T, Error>?
     private var isFinished = false
 
+    /// A checked continuation is not cancellation-aware on its own: cancelling
+    /// the surrounding task sets a flag and then waits forever for a Stripe
+    /// completion block that may never come. The handler is what turns Cancel
+    /// and the 60s timeout into an actual resume.
     func run(_ start: (@escaping (T?, Error?) -> Void) -> Void) async throws -> T {
-        try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-            start { value, error in
-                Task { @MainActor [weak self] in
-                    self?.deliver(value, error)
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                if isFinished {
+                    // Cancelled between the check above and getting here.
+                    self.continuation = nil
+                    continuation.resume(throwing: CancellationError())
+                    return
                 }
+                start { value, error in
+                    Task { @MainActor [weak self] in
+                        self?.deliver(value, error)
+                    }
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.deliver(nil, CancellationError())
             }
         }
     }

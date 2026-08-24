@@ -99,15 +99,16 @@ enum TapToPayCollectError: LocalizedError {
         case .deviceOrEntitlement:
             return TapToPayCollectUI.deviceOrEntitlementMessage
         case .timedOut:
-            return "The tap timed out. Nothing was charged."
+            return "Timed out — try again or use pay link. Nothing was charged."
         case .missingLocation:
             return TapToPayCollectUI.missingLocationMessage
         }
     }
 }
 
-/// The outcome of asking for money.
-enum PaymentOutcome: Equatable {
+/// The outcome of asking for money. Sendable because the coordinator runs a
+/// collect in a task it can cancel, and a task's result must cross actors.
+enum PaymentOutcome: Equatable, Sendable {
     /// Money is authorised or settled. Safe to issue a receipt.
     case captured(PaymentReceipt)
     /// The staffer backed out. Not an error; do not show one.

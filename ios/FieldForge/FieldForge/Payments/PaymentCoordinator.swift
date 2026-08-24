@@ -45,6 +45,15 @@ final class PaymentCoordinator {
     private let tapToPay: TapToPayProvider
     private let reachability: Reachability
 
+    /// The in-flight electronic collect, so Cancel can tear it down instead of
+    /// asking it nicely. Without this the UI could only *stop showing* a
+    /// collect it had no way to stop.
+    private var collectTask: Task<PaymentOutcome, Never>?
+    /// Bumped by every cancel. A collect that finally returns under a stale
+    /// generation is discarded rather than allowed to reinstate `inFlightMethod`
+    /// or advance the flow to Document.
+    private var collectGeneration = 0
+
     init(reachability: Reachability, tapToPayBackend: TapToPayBackend? = nil) {
         self.reachability = reachability
         self.applePay = ApplePayProvider(reachability: reachability)
@@ -131,10 +140,16 @@ final class PaymentCoordinator {
         if method == .tapToPay {
             TapToPaySession.markStarted()
         }
+        let generation = collectGeneration
         defer {
-            inFlightMethod = nil
-            if method == .tapToPay {
-                TapToPaySession.markFinished()
+            // A cancel already cleared this and moved the generation on; do not
+            // undo its work when the abandoned collect finally unwinds.
+            if generation == collectGeneration {
+                inFlightMethod = nil
+                collectTask = nil
+                if method == .tapToPay {
+                    TapToPaySession.markFinished()
+                }
             }
         }
 
@@ -158,7 +173,18 @@ final class PaymentCoordinator {
         default: provider = ManualPaymentProvider(method: method)
         }
 
-        let outcome = await provider.collect(request)
+        // Run the provider in a child task the coordinator holds, so Cancel has
+        // something to cancel. Provider collect paths are cancellation-aware:
+        // Stripe's completion blocks are bridged through continuations that
+        // resume on cancellation, and every network call is URLSession's own.
+        let task = Task { await provider.collect(request) }
+        collectTask = task
+        let outcome = await task.value
+
+        // Cancelled out from under us — report it as a cancellation whatever
+        // the provider eventually said, and do not touch coordinator state.
+        guard generation == collectGeneration else { return .cancelled }
+
         if case .failed(let failure) = outcome {
             lastFailure = failure
             AppLog.payments.error("Payment failed via \(method.rawValue, privacy: .public): \(failure.diagnosticCode, privacy: .public)")
@@ -169,10 +195,23 @@ final class PaymentCoordinator {
     /// Does not initialise Terminal. Collect is the only entry.
     func prepareForRoute() async {}
 
-    /// Cancels an in-flight Tap to Pay collect. Returns immediately so the
-    /// What step cannot hang waiting on Stripe.
-    func cancelTapToPay() async {
-        await tapToPay.cancelCollect()
+    /// Cancels an in-flight Tap to Pay collect.
+    ///
+    /// Synchronous and unconditional by design. Everything the UI needs — the
+    /// spinner stopping, the Collect button coming back, the re-entry guard
+    /// lifting, the launch lock clearing — happens on this line, before Stripe
+    /// is told anything. A staffer with a donor waiting must never be made to
+    /// force-quit because an SDK declined to call a completion block.
+    ///
+    /// Telling Stripe is best-effort and deliberately not awaited.
+    func cancelTapToPay() {
+        collectGeneration &+= 1
+        let task = collectTask
+        collectTask = nil
+        inFlightMethod = nil
+        TapToPaySession.markFinished()
+        task?.cancel()
+        Task { await tapToPay.cancelCollect() }
     }
 
     /// True when a captured outcome is safe to treat as received.

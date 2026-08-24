@@ -533,6 +533,43 @@ struct TextPayLinkTests {
         #expect(PaymentUnavailableReason.tapToPayEntitlementMissing.shortLabel == "Not enabled")
     }
 
+    @Test("Cancel frees the coordinator at once, without waiting on Stripe")
+    @MainActor
+    func cancelClearsInFlightImmediately() async {
+        let coordinator = PaymentCoordinator(reachability: Reachability(startImmediately: false))
+        TapToPaySession.markStarted()
+
+        // No collect is running; cancel must still be safe and must leave the
+        // coordinator ready for the next attempt rather than latched.
+        coordinator.cancelTapToPay()
+        #expect(coordinator.inFlightMethod == nil)
+        #expect(!TapToPaySession.collectInFlight)
+
+        // And a second Collect is not refused as re-entrant afterwards.
+        let outcome = await coordinator.collect(
+            method: .tapToPay,
+            request: PaymentRequest(
+                amount: Money(dollars: 25),
+                summaryLabel: "Donation",
+                merchantName: "Riverside",
+                fundName: "General"
+            )
+        )
+        if case .failed(let failure) = outcome {
+            #expect(failure.diagnosticCode != "reentrant")
+        }
+        #expect(coordinator.inFlightMethod == nil)
+        #expect(!TapToPaySession.collectInFlight)
+    }
+
+    @Test("The timeout tells the staffer what to do next")
+    func timeoutCopyOffersThePayLink() {
+        let message = TapToPayCollectError.timedOut.localizedDescription
+        #expect(message.contains("Timed out"))
+        #expect(message.contains("pay link"))
+        #expect(message.contains("Nothing was charged"))
+    }
+
     @Test("Collect times out after 60 seconds")
     func collectTimeoutIsSixtySeconds() {
         #expect(TapToPayCollectUI.timeoutSeconds == 60)

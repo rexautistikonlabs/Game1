@@ -728,6 +728,11 @@ comes from Azure env `STRIPE_TERMINAL_LOCATION_ID`. `sk_` never sits in Settings
    `create-payment-intent`) carries the same location. Pay-link routes are
    unchanged.
 
+**Test Tap to Pay from the home-screen icon, not under the Xcode debugger; and
+always verify Cancel before relying on Collect in the field.** A hung session
+under the debugger also blocks SpringBoard from relaunching the app — quit Xcode
+and it opens again.
+
 #### The switch, and why it is off
 
 `Settings → Payments → Tap to Pay on iPhone` ships **off** and persists per

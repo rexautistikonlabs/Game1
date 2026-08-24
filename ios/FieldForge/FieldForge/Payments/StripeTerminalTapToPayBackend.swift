@@ -112,6 +112,32 @@ final class StripeTerminalTapToPayBackend: TapToPayBackend, @unchecked Sendable 
     }
 }
 
+// MARK: - Exception shield
+
+/// Stripe Terminal reports integration mistakes — a missing Info.plist key, a
+/// call it considers illegal in the current state — by raising NSException,
+/// which Swift cannot catch and which kills the process mid-capture with
+/// SIGABRT. Route every SDK entry point through the ObjC shim so an assertion
+/// becomes an alert on What carrying Stripe's own reason, and a fault in the
+/// log naming the call that raised.
+@MainActor
+private func catchingTerminalException<T>(
+    _ label: StaticString,
+    _ work: () -> T
+) throws -> T {
+    var result: T?
+    var nsError: NSError?
+    let ok = FFCatchException({ result = work() }, &nsError)
+    guard ok, let value = result else {
+        let reason = nsError?.localizedDescription ?? "Stripe Terminal failed."
+        AppLog.payments.fault(
+            "Terminal raised during \(String(describing: label), privacy: .public): \(reason, privacy: .public)"
+        )
+        throw ProcessorError.server(status: 500, message: reason)
+    }
+    return value
+}
+
 // MARK: - Session
 
 /// All Stripe Terminal work, on the main actor. Terminal delivers delegate
@@ -166,8 +192,10 @@ final class TapToPayTerminalSession {
         )
 
         let retrieved: PaymentIntent = try await awaitingStripe { finish in
-            Terminal.shared.retrievePaymentIntent(clientSecret: clientSecret) { intent, error in
-                finish(intent, error)
+            try catchingTerminalException("retrievePaymentIntent") {
+                Terminal.shared.retrievePaymentIntent(clientSecret: clientSecret) { intent, error in
+                    finish(intent, error)
+                }
             }
             return nil
         }
@@ -175,12 +203,14 @@ final class TapToPayTerminalSession {
         // "Hold card to top of iPhone". The reader is already connected, so
         // nothing on this path can start discovery.
         let confirmed: PaymentIntent = try await awaitingStripe { finish in
-            Terminal.shared.processPaymentIntent(
-                retrieved,
-                collectConfig: nil,
-                confirmConfig: nil
-            ) { intent, error in
-                finish(intent, error)
+            try catchingTerminalException("processPaymentIntent") {
+                Terminal.shared.processPaymentIntent(
+                    retrieved,
+                    collectConfig: nil,
+                    confirmConfig: nil
+                ) { intent, error in
+                    finish(intent, error)
+                }
             }
         }
 
@@ -217,17 +247,19 @@ final class TapToPayTerminalSession {
         }
         locationId = token.locationId
 
-        installTokenProviderIfNeeded()
+        try installTokenProviderIfNeeded()
 
         if Terminal.shared.connectionStatus == .connected { return }
         // A reader we kept but are no longer connected to is stale.
         reader = nil
 
-        let supported = Terminal.shared.supportsReaders(
-            of: .tapToPay,
-            discoveryMethod: .tapToPay,
-            simulated: false
-        )
+        let supported = try catchingTerminalException("supportsReaders") {
+            Terminal.shared.supportsReaders(
+                of: .tapToPay,
+                discoveryMethod: .tapToPay,
+                simulated: false
+            )
+        }
         if case .failure(let error) = supported {
             throw error
         }
@@ -252,14 +284,16 @@ final class TapToPayTerminalSession {
         }
     }
 
-    private func installTokenProviderIfNeeded() {
+    private func installTokenProviderIfNeeded() throws {
         guard !Self.didInstallTokenProvider else { return }
-        if !Terminal.isInitialized() {
-            Terminal.initWithTokenProvider(Self.tokenProvider)
+        try catchingTerminalException("initialize") {
+            if !Terminal.isInitialized() {
+                Terminal.initWithTokenProvider(Self.tokenProvider)
+            }
+            // Connection status and payment status, for the log. Set once, and
+            // before anything asks Terminal to do work.
+            Terminal.shared.delegate = Self.terminalDelegate
         }
-        // Connection status and payment status, for the log. Set once, and
-        // before anything asks Terminal to do work.
-        Terminal.shared.delegate = Self.terminalDelegate
         Self.didInstallTokenProvider = true
     }
 
@@ -281,7 +315,7 @@ final class TapToPayTerminalSession {
     /// through `finish` exactly once — later callbacks are dropped rather than
     /// resuming a continuation twice.
     private func awaitingStripe<T>(
-        _ start: @escaping (@escaping (T?, Error?) -> Void) -> Cancelable?
+        _ start: @escaping @MainActor (@escaping (T?, Error?) -> Void) throws -> Cancelable?
     ) async throws -> T {
         let once = StripeOnce<T>()
         abortOutstanding = { [weak once] in once?.deliver(nil, CancellationError()) }
@@ -290,8 +324,13 @@ final class TapToPayTerminalSession {
             outstandingCancelable = nil
         }
         return try await once.run { finish in
-            let cancelable = start(finish)
-            self.outstandingCancelable = cancelable
+            do {
+                self.outstandingCancelable = try start(finish)
+            } catch {
+                // The Terminal call raised before it could take the completion
+                // block; fail this step instead of the process.
+                once.deliver(nil, error)
+            }
         }
     }
 }
@@ -322,26 +361,36 @@ private final class TapToPayConnectAttempt: NSObject, DiscoveryDelegate {
     }
 
     func run() async throws -> Reader {
+        // A cancel that landed before discovery even started (the 60s timer
+        // and the staffer's Cancel race this method) must not start it.
+        guard !isFinished else { throw CancellationError() }
         let config = try TapToPayDiscoveryConfigurationBuilder().build()
         return try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
-            self.discoverCancelable = Terminal.shared.discoverReaders(
-                config,
-                delegate: self
-            ) { error in
-                // Discovery has stopped. A successful connect stops it with no
-                // error, and that case has already finished this attempt.
-                Task { @MainActor [weak self] in
-                    guard let self, !self.isFinished else { return }
-                    if let error {
-                        self.finish(.failure(error))
-                    } else if !self.didStartConnect {
-                        self.finish(.failure(ProcessorError.server(
-                            status: 503,
-                            message: "This iPhone could not start Tap to Pay."
-                        )))
+            do {
+                self.discoverCancelable = try catchingTerminalException("discoverReaders") {
+                    Terminal.shared.discoverReaders(
+                        config,
+                        delegate: self
+                    ) { error in
+                        // Discovery has stopped. A successful connect stops it
+                        // with no error, and that case has already finished
+                        // this attempt.
+                        Task { @MainActor [weak self] in
+                            guard let self, !self.isFinished else { return }
+                            if let error {
+                                self.finish(.failure(error))
+                            } else if !self.didStartConnect {
+                                self.finish(.failure(ProcessorError.server(
+                                    status: 503,
+                                    message: "This iPhone could not start Tap to Pay."
+                                )))
+                            }
+                        }
                     }
                 }
+            } catch {
+                self.finish(.failure(error))
             }
         }
     }
@@ -359,11 +408,12 @@ private final class TapToPayConnectAttempt: NSObject, DiscoveryDelegate {
     private func connect(to reader: Reader) {
         let config: TapToPayConnectionConfiguration
         do {
+            // Merchant display name defaults to the app's name; passing an
+            // explicit nil into the ObjC builder is a needless risk.
             config = try TapToPayConnectionConfigurationBuilder(
                 delegate: readerDelegate,
                 locationId: locationId
             )
-            .setMerchantDisplayName(nil)
             .setTosAcceptancePermitted(true)
             .build()
         } catch {
@@ -371,18 +421,24 @@ private final class TapToPayConnectAttempt: NSObject, DiscoveryDelegate {
             return
         }
 
-        Terminal.shared.connectReader(reader, connectionConfig: config) { connected, error in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if let connected {
-                    self.finish(.success(connected))
-                } else {
-                    self.finish(.failure(error ?? ProcessorError.server(
-                        status: 503,
-                        message: TapToPayCollectUI.contactlessFailureMessage
-                    )))
+        do {
+            try catchingTerminalException("connectReader") {
+                Terminal.shared.connectReader(reader, connectionConfig: config) { connected, error in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        if let connected {
+                            self.finish(.success(connected))
+                        } else {
+                            self.finish(.failure(error ?? ProcessorError.server(
+                                status: 503,
+                                message: TapToPayCollectUI.contactlessFailureMessage
+                            )))
+                        }
+                    }
                 }
             }
+        } catch {
+            finish(.failure(error))
         }
     }
 

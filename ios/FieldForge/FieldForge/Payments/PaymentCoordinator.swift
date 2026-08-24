@@ -36,7 +36,9 @@ final class PaymentCoordinator {
     /// alert the staffer has to dismiss with a donor watching.
     private(set) var lastFailure: PaymentFailure?
 
-    /// Stored so SwiftUI notices Settings flipping SIMULATED off.
+    /// Stored so SwiftUI notices Settings flipping SIMULATED off. Scope: the
+    /// staff Wallet gateway only — pay links and Tap to Pay are never
+    /// simulated. Prefer `showsSimulatedPaymentsBanner` for UI.
     private(set) var isSimulatingPayments: Bool
 
     private let applePay: ApplePayProvider
@@ -97,6 +99,17 @@ final class PaymentCoordinator {
 
     /// Whether to show the "no signal — cash and cheques still work" banner.
     var shouldShowOfflineReassurance: Bool { !reachability.isOnline }
+
+    /// Whether a simulated charge is actually reachable from capture. The
+    /// simulated gateway backs only the staff Wallet path, and capture does
+    /// not present that path, so a staffer cannot produce a fake receipt —
+    /// pay links and Tap to Pay are real Stripe traffic regardless of the
+    /// gateway. A banner claiming "nothing is charged" while a donor's card
+    /// was genuinely charged is the dangerous kind of wrong, so Today shows
+    /// it only when a simulated charge could truly happen.
+    var showsSimulatedPaymentsBanner: Bool {
+        Self.presentsStaffApplePayInCapture && isSimulatingPayments
+    }
 
     /// Text and email pay links talk to Azure only. No pk_ and never sk_ on this iPhone.
     var canCreatePayLink: Bool {

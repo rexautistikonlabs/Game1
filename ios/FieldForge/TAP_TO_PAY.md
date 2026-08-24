@@ -173,6 +173,17 @@ Sixty seconds with no card cancels the outstanding step and leaves the gift
 unpaid on What. Cancel returns to What immediately and never waits on Stripe's
 cancel completion.
 
+One guard sits outside that line: **every Terminal entry point runs through an
+Objective-C exception shim** (`catchingTerminalException`). Stripe Terminal
+reports integration mistakes — a missing Info.plist key, a call it considers
+illegal in its current state — by raising `NSException`, which Swift cannot
+catch and which kills the process with SIGABRT. The shim turns that into an
+alert on What carrying Stripe's own reason, and writes a fault to the log.
+If Collect ever fails with an alert you don't recognise, read that line:
+Console.app → the iPhone → search `Terminal raised during` (subsystem is the
+app's bundle id, category `payments`). It names the exact call and Stripe's
+reason.
+
 ## Device verification (no debugger)
 
 Stripe Terminal and Apple Tap to Pay raise **NSException** internally while

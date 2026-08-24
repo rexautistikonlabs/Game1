@@ -269,7 +269,36 @@ final class PaymentGatewayRegistry {
 
     var canChargeCards: Bool { gateway.isConfigured }
 
-    /// True in a debug build using the simulator. The UI shows a visible banner
-    /// when this is on, so nobody demos a fake receipt believing it is real.
+    /// True when the staff Wallet gateway is the simulated one. Scope matters:
+    /// this gateway backs only the staff Apple Pay path. Donor pay links and
+    /// Tap to Pay talk to Azure and Stripe Terminal directly and are never
+    /// simulated by this flag.
     var isSimulated: Bool { gateway is SimulatedProcessorGateway }
+}
+
+extension PaymentGatewayRegistry {
+
+    /// The registered Apple Pay merchant ID, compiled into the entitlements.
+    /// Must match `com.apple.developer.in-app-payments` or PassKit silently
+    /// produces no sheet.
+    static let defaultMerchantIdentifier = "merchant.org.rexautistikonlabs.fieldforge"
+
+    /// Swaps the staff Wallet gateway to the real Stripe PaymentIntent path
+    /// when Settings has a backend URL and a publishable key. Without a pk_
+    /// the gateway stays as built — simulated in DEBUG, unconfigured in
+    /// release — and the simulation notice stays visible. Donor pay links and
+    /// Tap to Pay never route through this gateway either way.
+    func applyStripeSettings() {
+        let settings = StripePaymentSettings.shared
+        guard settings.isConfigured, let url = settings.createPaymentIntentURL else {
+            return
+        }
+        configure(
+            gateway: StripePaymentIntentGateway(
+                createIntentURL: url,
+                publishableKey: settings.publishableKey
+            ),
+            merchantIdentifier: Self.defaultMerchantIdentifier
+        )
+    }
 }

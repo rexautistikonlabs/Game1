@@ -140,10 +140,14 @@ struct TodayView: View {
             }
         }
 
-        if app.payments.isSimulatingPayments {
+        // Only when a simulated charge is actually reachable from capture.
+        // Pay links and Tap to Pay are real Stripe traffic even in a build
+        // whose staff Wallet gateway is simulated, so the old always-on
+        // "nothing is actually charged" line was simply false.
+        if app.payments.showsSimulatedPaymentsBanner {
             InlineBanner(
                 kind: .critical,
-                message: "Payments are simulated in this build. Nothing is actually charged, and receipts from it are not real."
+                message: "Staff Wallet charges are simulated in this build and produce no real receipts. Donor pay links and Tap to Pay still charge through Stripe."
             )
         }
     }

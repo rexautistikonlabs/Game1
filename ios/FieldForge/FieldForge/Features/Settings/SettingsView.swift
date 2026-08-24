@@ -388,7 +388,7 @@ struct SettingsView: View {
 
             if PaymentGatewayRegistry.shared.isSimulated {
                 Label(
-                    "Payments are simulated in this build. Nothing is charged.",
+                    "The staff Wallet gateway is simulated in this build (and is not shown in capture). Donor pay links and Tap to Pay charge through Stripe — test or live, per the key on Azure.",
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .font(Type.caption)
